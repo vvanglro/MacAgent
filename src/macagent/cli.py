@@ -32,9 +32,9 @@ def build_agent(settings: Settings) -> MacAgent:
 def run(text: str, yes: bool = typer.Option(False, "--yes", help="Auto confirm sensitive actions")) -> None:
     """Run one natural-language instruction."""
     settings = Settings.from_env()
-    agent = build_agent(settings)
 
     try:
+        agent = build_agent(settings)
         result = agent.run(text, auto_confirm=yes)
         if result.ok:
             typer.echo(f"✅ {result.message}")

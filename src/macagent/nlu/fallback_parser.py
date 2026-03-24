@@ -9,7 +9,7 @@ from macagent.domain.models import Action, ActionName
 class RuleBasedParser:
     """Simple parser for offline/local development and testing."""
 
-    WECHAT_PATTERN = re.compile(r"给(?P<contact>[^发说\s]+)发微信[：: ]?(说)?(?P<text>.+)")
+    WECHAT_PATTERN = re.compile(r"给(?P<contact>.+?)发微信[：: ]?(说)?(?P<text>.+)")
 
     def parse(self, text: str) -> Action:
         raw = text.strip()

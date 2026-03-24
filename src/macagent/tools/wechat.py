@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName, ActionResult
 from macagent.tools.executor import CommandExecutor
 
@@ -9,26 +10,38 @@ class WeChatSendMessageHandler:
         self.executor = executor
 
     def handle(self, action: Action) -> ActionResult:
-        contact = str(action.params["contact"])
-        text = str(action.params["text"])
+        contact = str(action.params.get("contact", "")).strip()
+        text = str(action.params.get("text", "")).strip()
+        if not contact:
+            raise ExecutionError("contact is required")
+        if not text:
+            raise ExecutionError("text is required")
+
         script = (
-            f'set contactName to "{_escape(contact)}"\n'
-            f'set msgText to "{_escape(text)}"\n'
-            'tell application "WeChat" to activate\n'
-            'delay 1\n'
-            'tell application "System Events"\n'
-            'set the clipboard to contactName\n'
-            'keystroke "f" using command down\n'
-            'delay 0.5\n'
-            'keystroke "v" using command down\n'
-            'delay 1\n'
-            'key code 36\n'
-            'delay 1\n'
-            'set the clipboard to msgText\n'
-            'keystroke "v" using command down\n'
-            'delay 0.5\n'
-            'key code 36\n'
-            'end tell'
+            'set savedClipboard to the clipboard\n'
+            'try\n'
+            f'  set contactName to "{_escape(contact)}"\n'
+            f'  set msgText to "{_escape(text)}"\n'
+            '  tell application "WeChat" to activate\n'
+            '  delay 1\n'
+            '  tell application "System Events"\n'
+            '    set the clipboard to contactName\n'
+            '    keystroke "f" using command down\n'
+            '    delay 0.5\n'
+            '    keystroke "v" using command down\n'
+            '    delay 1\n'
+            '    key code 36\n'
+            '    delay 1\n'
+            '    set the clipboard to msgText\n'
+            '    keystroke "v" using command down\n'
+            '    delay 0.5\n'
+            '    key code 36\n'
+            '  end tell\n'
+            '  set the clipboard to savedClipboard\n'
+            'on error errMsg number errNum\n'
+            '  set the clipboard to savedClipboard\n'
+            '  error errMsg number errNum\n'
+            'end try'
         )
         self.executor.run_or_raise(["osascript", "-e", script], timeout=30)
         return ActionResult(ok=True, action=ActionName.WECHAT_SEND_MESSAGE, message=f"消息已发送给 {contact}")

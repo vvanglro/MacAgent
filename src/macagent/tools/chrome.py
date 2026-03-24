@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote_plus
 
+from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName, ActionResult
 from macagent.tools.executor import CommandExecutor
 
@@ -25,7 +26,10 @@ class ChromeSearchHandler:
         self.executor = executor
 
     def handle(self, action: Action) -> ActionResult:
-        query = str(action.params["query"])
+        query = str(action.params.get("query", "")).strip()
+        if not query:
+            raise ExecutionError("query is required")
+
         url = f"https://www.google.com/search?q={quote_plus(query)}"
         self.executor.run_or_raise(["open", "-a", "Google Chrome", url])
         return ActionResult(ok=True, action=ActionName.CHROME_SEARCH, message=f"已在 Chrome 搜索: {query}")

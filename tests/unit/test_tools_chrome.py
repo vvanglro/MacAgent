@@ -1,3 +1,6 @@
+import pytest
+
+from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName
 from macagent.tools.chrome import ChromeSearchHandler
 
@@ -19,3 +22,11 @@ def test_chrome_search_uses_open_command() -> None:
     assert executor.commands
     assert executor.commands[0][:3] == ["open", "-a", "Google Chrome"]
     assert "mac+agent" in executor.commands[0][-1]
+
+
+def test_chrome_search_rejects_missing_query() -> None:
+    executor = FakeExecutor()
+    handler = ChromeSearchHandler(executor)
+
+    with pytest.raises(ExecutionError):
+        handler.handle(Action(name=ActionName.CHROME_SEARCH, params={}))

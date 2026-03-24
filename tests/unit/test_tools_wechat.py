@@ -1,3 +1,6 @@
+import pytest
+
+from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName
 from macagent.tools.wechat import WeChatSendMessageHandler
 
@@ -10,7 +13,7 @@ class FakeExecutor:
         self.commands.append(command)
 
 
-def test_wechat_handler_invokes_osascript() -> None:
+def test_wechat_handler_invokes_osascript_and_restores_clipboard() -> None:
     executor = FakeExecutor()
     handler = WeChatSendMessageHandler(executor)
 
@@ -18,4 +21,16 @@ def test_wechat_handler_invokes_osascript() -> None:
 
     assert executor.commands
     assert executor.commands[0][0] == "osascript"
-    assert "contactName" in executor.commands[0][2]
+    assert "savedClipboard" in executor.commands[0][2]
+    assert "set the clipboard to savedClipboard" in executor.commands[0][2]
+
+
+def test_wechat_handler_rejects_missing_contact_or_text() -> None:
+    executor = FakeExecutor()
+    handler = WeChatSendMessageHandler(executor)
+
+    with pytest.raises(ExecutionError):
+        handler.handle(Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"text": "hello"}))
+
+    with pytest.raises(ExecutionError):
+        handler.handle(Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"contact": "hulk"}))

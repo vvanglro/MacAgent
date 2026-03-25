@@ -17,6 +17,12 @@ class RuleBasedParser:
     READ_CONTACT_LAST_MESSAGE_PATTERN = re.compile(
         r"^(?:读取|查看|看看)(?:一下)?(?:微信(?:里|中)?(?:和)?|微信)?(?P<contact>.+?)(?:的)?最后一条消息$"
     )
+    READ_CURRENT_MESSAGES_PATTERN = re.compile(
+        r"((读取|查看|看看)(?:一下)?(?:微信)?(?:当前聊天|当前会话|当前对话)?(?:的)?消息)"
+    )
+    READ_CONTACT_MESSAGES_PATTERN = re.compile(
+        r"^(?:读取|查看|看看)(?:一下)?(?:微信(?:里|中)?(?:和)?|微信)?(?P<contact>.+?)(?:的)?消息$"
+    )
 
     def parse(self, text: str) -> ActionPlan:
         raw = text.strip()
@@ -51,13 +57,29 @@ class RuleBasedParser:
                     actions=[
                         Action(
                             name=ActionName.WECHAT_READ_LAST_MESSAGE,
-                            params={"contact": contact},
+                            params={"contact": contact, "mode": "last"},
                         )
                     ]
                 )
 
         if self.READ_CURRENT_LAST_MESSAGE_PATTERN.search(raw):
-            return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE)])
+            return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last"})])
+
+        contact_messages_match = self.READ_CONTACT_MESSAGES_PATTERN.search(raw)
+        if contact_messages_match:
+            contact = contact_messages_match.group("contact").strip()
+            if contact and contact not in {"当前聊天", "当前会话", "当前对话"}:
+                return ActionPlan(
+                    actions=[
+                        Action(
+                            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+                            params={"contact": contact, "mode": "all"},
+                        )
+                    ]
+                )
+
+        if self.READ_CURRENT_MESSAGES_PATTERN.search(raw):
+            return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "all"})])
 
         if "聚焦" in raw and ("地址栏" in raw or "搜索栏" in raw):
             return ActionPlan(actions=[Action(name=ActionName.CHROME_FOCUS_ADDRESS_BAR)])

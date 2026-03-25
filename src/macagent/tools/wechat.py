@@ -39,6 +39,7 @@ class WeChatReadLastMessageHandler:
 
     def handle(self, action: Action) -> ActionResult:
         contact = str(action.params.get("contact", "")).strip()
+        mode = str(action.params.get("mode", "all")).strip().lower() or "all"
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
         window_bounds = None
@@ -51,7 +52,8 @@ class WeChatReadLastMessageHandler:
         window_bounds = _parse_window_bounds(bounds_result.stdout)
         capture_region = _chat_capture_region(window_bounds)
         blocks = self._capture_region_text_blocks(capture_region)
-        message = _extract_last_message(blocks)
+        incoming_messages = _extract_incoming_messages(blocks)
+        message = incoming_messages[-1] if mode == "last" else _format_messages_output(incoming_messages)
         ocr_text = _collect_ocr_text(blocks)
 
         return ActionResult(
@@ -59,12 +61,18 @@ class WeChatReadLastMessageHandler:
             action=ActionName.WECHAT_READ_LAST_MESSAGE,
             message=(
                 f"{contact} 最后一条消息: {message}"
-                if contact
+                if mode == "last" and contact
                 else f"当前聊天最后一条消息: {message}"
+                if mode == "last"
+                else f"{contact} 收到的消息:\n{message}"
+                if contact
+                else f"当前聊天收到的消息:\n{message}"
             ),
             metadata={
-                "last_message": message,
+                "last_message": incoming_messages[-1],
+                "incoming_messages": incoming_messages,
                 "contact": contact or None,
+                "mode": mode,
                 "ocr_text": ocr_text,
             },
         )
@@ -320,26 +328,46 @@ def _parse_ocr_blocks(raw: str) -> list[OCRTextBlock]:
     return blocks
 
 
-def _extract_last_message(blocks: list[OCRTextBlock]) -> str:
-    message_blocks = [block for block in blocks if not _is_probable_timestamp(block)]
+def _extract_incoming_messages(blocks: list[OCRTextBlock]) -> list[str]:
+    message_blocks = [
+        block
+        for block in blocks
+        if not _is_probable_timestamp(block) and _is_incoming_message_block(block)
+    ]
     if not message_blocks:
         raise ExecutionError("No readable message found in the current WeChat chat window")
 
     sorted_blocks = sorted(message_blocks, key=lambda block: (block.min_y, block.min_x))
-    anchor = sorted_blocks[0]
-    cluster = [anchor]
+    clusters: list[list[OCRTextBlock]] = []
+    current_cluster: list[OCRTextBlock] = []
 
-    for block in sorted_blocks[1:]:
-        vertical_gap = block.min_y - cluster[-1].max_y
+    for block in sorted_blocks:
+        if not current_cluster:
+            current_cluster = [block]
+            continue
+
+        vertical_gap = block.min_y - current_cluster[-1].max_y
         if vertical_gap > 0.045:
-            break
-        cluster.append(block)
+            clusters.append(current_cluster)
+            current_cluster = [block]
+            continue
 
-    cluster.sort(key=lambda block: (-block.min_y, block.min_x))
-    message = " ".join(block.text for block in cluster).strip()
-    if not message:
+        current_cluster.append(block)
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    messages: list[str] = []
+    for cluster in reversed(clusters):
+        cluster.sort(key=lambda block: (-block.min_y, block.min_x))
+        message = " ".join(block.text for block in cluster).strip()
+        if message:
+            messages.append(message)
+
+    if not messages:
         raise ExecutionError("No readable message found in the current WeChat chat window")
-    return message
+
+    return messages
 
 
 def _collect_ocr_text(blocks: list[OCRTextBlock]) -> list[str]:
@@ -352,6 +380,15 @@ def _is_probable_timestamp(block: OCRTextBlock) -> bool:
         return False
     center_x = (block.min_x + block.max_x) / 2
     return 0.15 <= center_x <= 0.85
+
+
+def _is_incoming_message_block(block: OCRTextBlock) -> bool:
+    center_x = (block.min_x + block.max_x) / 2
+    return center_x < 0.55
+
+
+def _format_messages_output(messages: list[str]) -> str:
+    return "\n".join(f"{index}. {message}" for index, message in enumerate(messages, start=1))
 
 
 def _pick_contact_search_result(blocks: list[OCRTextBlock], contact: str) -> OCRTextBlock | None:

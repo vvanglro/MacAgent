@@ -13,7 +13,9 @@ from macagent.tools.wechat import (
     WeChatSendMessageHandler,
     _chat_capture_region,
     _collect_ocr_text,
-    _extract_last_message,
+    _extract_incoming_messages,
+    _format_messages_output,
+    _is_incoming_message_block,
     _is_probable_timestamp,
     _pick_contact_search_result,
     _parse_window_bounds,
@@ -92,28 +94,29 @@ def test_search_result_click_point_converts_normalized_ocr_box_to_screen_coordin
     assert point == (300, 540)
 
 
-def test_extract_last_message_joins_bottom_multiline_cluster() -> None:
-    message = _extract_last_message(
+def test_extract_incoming_messages_joins_multiline_left_bubble_only() -> None:
+    messages = _extract_incoming_messages(
         [
-            OCRTextBlock(text="第二行", min_x=0.62, min_y=0.08, max_x=0.85, max_y=0.12),
-            OCRTextBlock(text="第一行", min_x=0.62, min_y=0.13, max_x=0.85, max_y=0.17),
+            OCRTextBlock(text="第二行", min_x=0.18, min_y=0.08, max_x=0.34, max_y=0.12),
+            OCRTextBlock(text="第一行", min_x=0.18, min_y=0.13, max_x=0.34, max_y=0.17),
+            OCRTextBlock(text="我发的", min_x=0.72, min_y=0.06, max_x=0.88, max_y=0.10),
             OCRTextBlock(text="更早的消息", min_x=0.10, min_y=0.35, max_x=0.30, max_y=0.39),
         ]
     )
 
-    assert message == "第一行 第二行"
+    assert messages == ["更早的消息", "第一行 第二行"]
 
 
-def test_extract_last_message_ignores_centered_timestamp_labels() -> None:
-    message = _extract_last_message(
+def test_extract_incoming_messages_ignores_centered_timestamp_labels() -> None:
+    messages = _extract_incoming_messages(
         [
             OCRTextBlock(text="14:28", min_x=0.45, min_y=0.08, max_x=0.55, max_y=0.12),
-            OCRTextBlock(text="hello", min_x=0.65, min_y=0.07, max_x=0.82, max_y=0.11),
+            OCRTextBlock(text="hello", min_x=0.20, min_y=0.07, max_x=0.37, max_y=0.11),
             OCRTextBlock(text="更早的消息", min_x=0.10, min_y=0.30, max_x=0.30, max_y=0.34),
         ]
     )
 
-    assert message == "hello"
+    assert messages == ["更早的消息", "hello"]
 
 
 def test_collect_ocr_text_returns_all_blocks_top_to_bottom() -> None:
@@ -131,6 +134,19 @@ def test_is_probable_timestamp_recognizes_centered_time_label() -> None:
     assert _is_probable_timestamp(
         OCRTextBlock(text="14:28", min_x=0.45, min_y=0.20, max_x=0.55, max_y=0.24)
     ) is True
+
+
+def test_is_incoming_message_block_prefers_left_side_only() -> None:
+    assert _is_incoming_message_block(
+        OCRTextBlock(text="左侧", min_x=0.12, min_y=0.20, max_x=0.30, max_y=0.24)
+    ) is True
+    assert _is_incoming_message_block(
+        OCRTextBlock(text="右侧", min_x=0.70, min_y=0.20, max_x=0.88, max_y=0.24)
+    ) is False
+
+
+def test_format_messages_output_numbers_all_messages() -> None:
+    assert _format_messages_output(["第一条", "第二条"]) == "1. 第一条\n2. 第二条"
 
 
 def test_pick_contact_search_result_prefers_contact_match_before_group_section() -> None:
@@ -161,7 +177,7 @@ def test_pick_contact_search_result_falls_back_to_group_when_no_contact_match() 
     assert result.text == "纯洁友谊户本圆⑤"
 
 
-def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None:
+def test_wechat_read_last_message_handler_reads_all_incoming_messages_by_default(monkeypatch) -> None:
     executor = FakeExecutor()
     executor.responses["osascript"] = CompletedProcess(
         ["osascript"],
@@ -174,7 +190,7 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
         0,
         stdout=json.dumps(
             [
-                {"text": "hello", "minX": 0.65, "minY": 0.08, "maxX": 0.82, "maxY": 0.12},
+                {"text": "hello", "minX": 0.18, "minY": 0.08, "maxX": 0.35, "maxY": 0.12},
                 {"text": "earlier", "minX": 0.12, "minY": 0.30, "maxX": 0.28, "maxY": 0.34},
             ]
         ),
@@ -202,7 +218,7 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
         handler,
         "_capture_region_text_blocks",
         lambda region: captured_regions.append(region) or [
-            OCRTextBlock(text="hello", min_x=0.65, min_y=0.08, max_x=0.82, max_y=0.12),
+            OCRTextBlock(text="hello", min_x=0.18, min_y=0.08, max_x=0.35, max_y=0.12),
             OCRTextBlock(text="earlier", min_x=0.12, min_y=0.30, max_x=0.28, max_y=0.34),
         ],
     )
@@ -211,13 +227,60 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
 
     assert result.ok is True
     assert result.metadata["last_message"] == "hello"
-    assert result.message == "当前聊天最后一条消息: hello"
+    assert result.metadata["incoming_messages"] == ["earlier", "hello"]
+    assert result.message == "当前聊天收到的消息:\n1. earlier\n2. hello"
     assert result.metadata["ocr_text"] == ["earlier", "hello"]
     assert captured_regions == [(400, 296, 670, 528)]
     assert executor.commands[0] == ["open", "-a", "WeChat"]
     assert executor.commands[1] == ["osascript", "-e", 'tell application "WeChat" to activate']
     assert executor.commands[2][0] == "osascript"
     assert len(executor.commands) == 3
+
+
+def test_wechat_read_last_message_handler_returns_latest_incoming_message_only_when_requested(monkeypatch) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+    captured_regions: list[tuple[int, int, int, int]] = []
+
+    class FakeResources:
+        def __enter__(self) -> Path:
+            return Path("/tmp/fake_vision_ocr.swift")
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.as_file",
+        lambda _path: FakeResources(),
+    )
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.files",
+        lambda _package: Path("/tmp"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_capture_region_text_blocks",
+        lambda region: captured_regions.append(region) or [
+            OCRTextBlock(text="hello", min_x=0.18, min_y=0.08, max_x=0.35, max_y=0.12),
+            OCRTextBlock(text="我发的", min_x=0.72, min_y=0.16, max_x=0.88, max_y=0.20),
+            OCRTextBlock(text="earlier", min_x=0.12, min_y=0.30, max_x=0.28, max_y=0.34),
+        ],
+    )
+
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last"}))
+
+    assert result.ok is True
+    assert result.metadata["last_message"] == "hello"
+    assert result.metadata["incoming_messages"] == ["earlier", "hello"]
+    assert result.message == "当前聊天最后一条消息: hello"
+    assert result.metadata["mode"] == "last"
+    assert captured_regions == [(400, 296, 670, 528)]
 
 
 def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monkeypatch) -> None:
@@ -233,7 +296,7 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
         0,
         stdout=json.dumps(
             [
-                {"text": "晚上早点睡", "minX": 0.65, "minY": 0.08, "maxX": 0.90, "maxY": 0.12},
+                {"text": "晚上早点睡", "minX": 0.18, "minY": 0.08, "maxX": 0.44, "maxY": 0.12},
             ]
         ),
         stderr="",
@@ -268,13 +331,13 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
             ]
             if len(captured_regions) == 1
             else [
-                OCRTextBlock(text="晚上早点睡", min_x=0.65, min_y=0.08, max_x=0.90, max_y=0.12),
+                OCRTextBlock(text="晚上早点睡", min_x=0.18, min_y=0.08, max_x=0.44, max_y=0.12),
             ]
         ),
     )
     monkeypatch.setattr(handler, "_click_at", lambda x, y: clicked_points.append((x, y)))
 
-    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "纯洁友谊户"}))
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "纯洁友谊户", "mode": "last"}))
 
     assert result.ok is True
     assert result.metadata["contact"] == "纯洁友谊户"

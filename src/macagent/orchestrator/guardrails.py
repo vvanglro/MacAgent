@@ -36,3 +36,6 @@ def validate_action(action: Action) -> None:
         contact = str(action.params.get("contact", "")).strip()
         if "contact" in action.params and not contact:
             raise GuardrailError("contact must not be empty")
+        mode = str(action.params.get("mode", "all")).strip().lower()
+        if mode not in {"all", "last"}:
+            raise GuardrailError("mode must be one of: all, last")

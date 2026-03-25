@@ -88,7 +88,7 @@ def test_llm_parser_accepts_read_last_message_action() -> None:
         json.dumps(
             {
                 "name": "wechat.read_last_message",
-                "params": {},
+                "params": {"mode": "last"},
                 "requires_confirmation": False,
             }
         )
@@ -97,6 +97,7 @@ def test_llm_parser_accepts_read_last_message_action() -> None:
     plan = parser.parse("读取当前聊天最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"mode": "last"}
 
 
 def test_llm_parser_accepts_read_last_message_action_with_contact() -> None:
@@ -106,7 +107,7 @@ def test_llm_parser_accepts_read_last_message_action_with_contact() -> None:
         json.dumps(
             {
                 "name": "wechat.read_last_message",
-                "params": {"contact": "不熬夜"},
+                "params": {"contact": "不熬夜", "mode": "last"},
                 "requires_confirmation": False,
             }
         )
@@ -115,7 +116,26 @@ def test_llm_parser_accepts_read_last_message_action_with_contact() -> None:
     plan = parser.parse("读取不熬夜最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"contact": "不熬夜"}
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "last"}
+
+
+def test_llm_parser_accepts_read_all_messages_action_with_contact() -> None:
+    parser = OpenAIParser.__new__(OpenAIParser)
+    parser.model = "gpt-4o-mini"
+    parser.client = FakeClient(
+        json.dumps(
+            {
+                "name": "wechat.read_last_message",
+                "params": {"contact": "不熬夜", "mode": "all"},
+                "requires_confirmation": False,
+            }
+        )
+    )
+
+    plan = parser.parse("读取不熬夜消息")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "all"}
 
 
 def test_llm_parser_raises_parse_error_on_bad_json() -> None:

@@ -37,6 +37,7 @@ def test_rule_parser_outputs_wechat_read_last_message_action() -> None:
     plan = parser.parse("读取当前聊天最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"mode": "last"}
 
 
 def test_rule_parser_outputs_wechat_read_last_message_for_contact() -> None:
@@ -44,4 +45,20 @@ def test_rule_parser_outputs_wechat_read_last_message_for_contact() -> None:
     plan = parser.parse("读取不熬夜最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"contact": "不熬夜"}
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "last"}
+
+
+def test_rule_parser_reads_all_messages_for_contact_when_not_explicit_last() -> None:
+    parser = RuleBasedParser()
+    plan = parser.parse("读取不熬夜消息")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "all"}
+
+
+def test_rule_parser_reads_all_messages_for_current_chat_when_not_explicit_last() -> None:
+    parser = RuleBasedParser()
+    plan = parser.parse("读取当前聊天消息")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"mode": "all"}

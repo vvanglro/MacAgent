@@ -14,7 +14,7 @@ ACTION_SCHEMAS: dict[ActionName, dict[str, Any]] = {
     },
     ActionName.WECHAT_READ_LAST_MESSAGE: {
         "required": set(),
-        "optional": {"contact"},
+        "optional": {"contact", "mode"},
         "description": "Read the last visible message in the current WeChat chat window",
     },
     ActionName.WECHAT_SEND_MESSAGE: {
@@ -109,7 +109,7 @@ class OpenAIParser:
             "or a plan object with key actions containing a list of action objects. "
             "Allowed actions and exact params: "
             "wechat.open => params {}, "
-            "wechat.read_last_message => params {} or {contact: string}, "
+            "wechat.read_last_message => params {mode: \"all\"|\"last\"} with optional contact: string, "
             "wechat.send_message => params {contact: string, text: string}, "
             "chrome.focus_address_bar => params {}, "
             "chrome.search => params {query: string}. "

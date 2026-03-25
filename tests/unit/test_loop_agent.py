@@ -195,6 +195,69 @@ def test_loop_agent_passes_recent_history_context_into_next_round(tmp_path: Path
     assert "我上次发送：未发送" in read_handler.calls[1].params["instruction"]
 
 
+def test_loop_agent_loads_default_owner_persona_file_from_current_directory(tmp_path: Path, monkeypatch) -> None:
+    persona_file = tmp_path / "macagent-wechat-owner-profile.md"
+    persona_file.write_text(
+        "你本人说话偏口语、轻松，不爱太官方。和熟人聊天可以带一点玩笑，但别油腻。",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    read_handler = SequencedReadHandler(
+        [
+            ActionResult(
+                ok=True,
+                action=ActionName.WECHAT_READ_LAST_MESSAGE,
+                message="ok",
+                metadata={
+                    "last_message": "hello",
+                    "incoming_messages": ["hello"],
+                    "summary": "对方打了个招呼。",
+                    "reply_suggestion": "可以回 hi",
+                    "reader_backend": "vision_model",
+                    "mode": "reply_advice",
+                },
+            )
+        ]
+    )
+    send_handler = RecordingSendHandler()
+
+    agent = WeChatLoopAgent(
+        read_handler=read_handler,
+        send_handler=send_handler,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: datetime(2026, 3, 25, 10, 0, 0),
+    )
+
+    agent.run(contact="沪上小牛爷", interval_seconds=10, rounds=1, auto_send=False)
+
+    assert "微信主人长期风格档案：" in read_handler.calls[0].params["instruction"]
+    assert "轻松，不爱太官方" in read_handler.calls[0].params["instruction"]
+
+
+def test_loop_agent_requires_explicit_persona_file_when_provided(tmp_path: Path) -> None:
+    read_handler = SequencedReadHandler([])
+    send_handler = RecordingSendHandler()
+    agent = WeChatLoopAgent(
+        read_handler=read_handler,
+        send_handler=send_handler,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: datetime(2026, 3, 25, 10, 0, 0),
+    )
+
+    try:
+        agent.run(
+            contact="沪上小牛爷",
+            interval_seconds=10,
+            rounds=1,
+            auto_send=False,
+            persona_file=tmp_path / "missing-profile.md",
+        )
+    except Exception as exc:
+        assert "persona file not found" in str(exc)
+    else:
+        raise AssertionError("expected missing persona file to raise")
+
+
 def test_loop_agent_skips_auto_send_when_in_cooldown_even_with_new_incoming(tmp_path: Path) -> None:
     read_handler = SequencedReadHandler(
         [

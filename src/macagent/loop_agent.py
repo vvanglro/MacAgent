@@ -58,6 +58,7 @@ class WeChatLoopAgent:
         log_path: Path | None = None,
         cooldown_seconds: int = 180,
         context_rounds: int = 3,
+        persona_file: Path | None = None,
     ) -> LoopRunSummary:
         normalized_contact = contact.strip()
         if not normalized_contact:
@@ -75,7 +76,13 @@ class WeChatLoopAgent:
         resolved_log_path = log_path or (
             Path.cwd() / f"macagent-loop-{_slugify_filename(normalized_contact)}-{_timestamp_slug(started_at)}.md"
         )
+        resolved_persona_file = persona_file or (Path.cwd() / "macagent-wechat-owner-profile.md")
         context_entries = _load_context_entries(resolved_log_path)[-context_rounds:] if context_rounds else []
+        persona_text = _load_persona_text(resolved_persona_file, required=persona_file is not None)
+        if persona_text:
+            emit_progress(self.reporter, f"已加载微信主人风格档案：{resolved_persona_file.name}")
+        else:
+            emit_progress(self.reporter, "未找到微信主人风格档案，使用默认回复风格")
         self._ensure_log_header(resolved_log_path, normalized_contact, interval_seconds, auto_send, started_at)
 
         last_signature: str | None = None
@@ -93,6 +100,7 @@ class WeChatLoopAgent:
             try:
                 instruction = _build_loop_instruction(
                     contact=normalized_contact,
+                    persona_text=persona_text,
                     context_entries=context_entries[-context_rounds:] if context_rounds else [],
                 )
                 read_result = self.read_handler.handle(
@@ -342,12 +350,20 @@ def _clean_string_list(value: object) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _build_loop_instruction(contact: str, context_entries: list[LoopContextEntry]) -> str:
+def _build_loop_instruction(contact: str, persona_text: str | None, context_entries: list[LoopContextEntry]) -> str:
     base = f"读取一下{contact}说了些什么，我该怎么继续聊天。"
+    lines = [base]
+    if persona_text:
+        lines.extend(
+            [
+                "微信主人长期风格档案：",
+                persona_text,
+            ]
+        )
     if not context_entries:
-        return base
+        return "\n".join(lines)
 
-    lines = [base, "最近几轮历史上下文："]
+    lines.append("最近几轮历史上下文：")
     for index, entry in enumerate(context_entries, start=1):
         incoming = "；".join(entry.incoming_messages) or "无明确来信"
         summary = entry.summary or "无摘要"
@@ -395,3 +411,13 @@ def _load_context_entries(log_path: Path) -> list[LoopContextEntry]:
             )
         )
     return entries
+
+
+def _load_persona_text(persona_file: Path, required: bool) -> str | None:
+    if not persona_file.exists():
+        if required:
+            raise ExecutionError(f"persona file not found: {persona_file}")
+        return None
+
+    content = persona_file.read_text(encoding="utf-8").strip()
+    return content or None

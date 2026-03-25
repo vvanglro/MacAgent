@@ -61,6 +61,7 @@ def test_cli_loop_accepts_contact_interval_and_yes_flag(monkeypatch, tmp_path) -
             log_path=None,
             cooldown_seconds: int = 180,
             context_rounds: int = 3,
+            persona_file=None,
         ):
             captured["contact"] = contact
             captured["interval_seconds"] = interval_seconds
@@ -69,6 +70,7 @@ def test_cli_loop_accepts_contact_interval_and_yes_flag(monkeypatch, tmp_path) -
             captured["log_path"] = log_path
             captured["cooldown_seconds"] = cooldown_seconds
             captured["context_rounds"] = context_rounds
+            captured["persona_file"] = persona_file
             from pathlib import Path
             from macagent.loop_agent import LoopRunSummary
 
@@ -95,6 +97,8 @@ def test_cli_loop_accepts_contact_interval_and_yes_flag(monkeypatch, tmp_path) -
             "90",
             "--context-rounds",
             "4",
+            "--persona-file",
+            str(tmp_path / "owner-profile.md"),
             "--yes",
             "--log-file",
             str(log_path),
@@ -110,6 +114,7 @@ def test_cli_loop_accepts_contact_interval_and_yes_flag(monkeypatch, tmp_path) -
         "log_path": log_path,
         "cooldown_seconds": 90,
         "context_rounds": 4,
+        "persona_file": tmp_path / "owner-profile.md",
     }
     assert "• 正在构建 loop agent" in result.stdout
     assert "✅ loop 完成" in result.stdout

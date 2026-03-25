@@ -122,6 +122,7 @@ def loop(
     rounds: int = typer.Option(5, "--rounds", min=0, help="How many rounds to run; 0 means keep looping"),
     cooldown: int = typer.Option(180, "--cooldown", min=0, help="Cooldown after we send a reply, in seconds"),
     context_rounds: int = typer.Option(3, "--context-rounds", min=0, help="How many recent rounds to feed back as context"),
+    persona_file: Path | None = typer.Option(None, "--persona-file", help="Owner persona/profile file for long-term style context"),
     yes: bool = typer.Option(False, "--yes", help="Auto send the generated reply suggestion"),
     log_file: Path | None = typer.Option(None, "--log-file", help="Markdown log path; defaults to current directory"),
 ) -> None:
@@ -141,6 +142,7 @@ def loop(
             log_path=log_file,
             cooldown_seconds=cooldown,
             context_rounds=context_rounds,
+            persona_file=persona_file,
         )
         typer.echo(
             f"✅ loop 完成，已记录 {summary.rounds_completed} 轮，自动发送 {summary.replies_sent} 次，日志文件：{summary.log_path}"

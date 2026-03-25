@@ -6,6 +6,7 @@
 - 微信发送消息：`wechat.send_message(contact, text)`
 - 读取当前聊天最后一条消息：`wechat.read_last_message()`
 - 读取指定联系人最后一条消息：`wechat.read_last_message(contact)`
+- 微信 loop agent：周期性读取聊天、写入 Markdown 日志、生成续聊建议，并可选自动回复
 - Chrome 聚焦地址栏：`chrome.focus_address_bar()`
 - Chrome 搜索：`chrome.search(query)`
 
@@ -28,9 +29,20 @@ macagent run "给hulk发微信说hello" --yes
 macagent run "打开微信 给hulk发微信说hello" --yes
 macagent run "读取当前聊天最后一条消息"
 macagent run "读取不熬夜最后一条消息"
+macagent loop "沪上小牛爷" --interval 60 --rounds 5
+macagent loop "沪上小牛爷" --interval 60 --rounds 0 --yes --cooldown 180 --context-rounds 3
 macagent run "聚焦 chrome 地址栏"
 macagent run "搜索 macagent"
 ```
+
+`loop` 命令说明：
+- 默认把每轮识别结果追加写到当前目录的 Markdown 文件
+- 默认日志文件名会带上 loop 启动时间，避免多次运行互相覆盖
+- 每轮会带上最近几轮摘要、来信和上次发送内容，作为新的上下文
+- 只在识别到对方的新消息时才生成/发送新的回复
+- `--cooldown` 控制我们刚发完后要等多久才能再次自动回复
+- `--yes` 才会自动发送建议回复；不带时只做观察和记录
+- `--rounds 0` 表示持续循环，直到你手动停止
 
 ## Environment Variables
 - `MACAGENT_PARSER_BACKEND=rule|openai`（默认 `rule`）

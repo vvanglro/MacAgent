@@ -45,3 +45,71 @@ def test_cli_run_accepts_text_and_yes_flag(monkeypatch) -> None:
     assert "• 正在解析指令并构建执行计划" in result.stdout
     assert "• 开始执行" in result.stdout
     assert "✅ sent" in result.stdout
+
+
+def test_cli_loop_accepts_contact_interval_and_yes_flag(monkeypatch, tmp_path) -> None:
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class FakeLoopAgent:
+        def run(
+            self,
+            contact: str,
+            interval_seconds: int,
+            rounds: int = 5,
+            auto_send: bool = False,
+            log_path=None,
+            cooldown_seconds: int = 180,
+            context_rounds: int = 3,
+        ):
+            captured["contact"] = contact
+            captured["interval_seconds"] = interval_seconds
+            captured["rounds"] = rounds
+            captured["auto_send"] = auto_send
+            captured["log_path"] = log_path
+            captured["cooldown_seconds"] = cooldown_seconds
+            captured["context_rounds"] = context_rounds
+            from pathlib import Path
+            from macagent.loop_agent import LoopRunSummary
+
+            return LoopRunSummary(
+                log_path=Path(log_path),
+                rounds_completed=rounds,
+                replies_sent=1,
+                contact=contact,
+            )
+
+    monkeypatch.setattr(cli, "build_loop_agent", lambda _settings, reporter=None: FakeLoopAgent())
+    log_path = tmp_path / "loop.md"
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "loop",
+            "沪上小牛爷",
+            "--interval",
+            "30",
+            "--rounds",
+            "2",
+            "--cooldown",
+            "90",
+            "--context-rounds",
+            "4",
+            "--yes",
+            "--log-file",
+            str(log_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "contact": "沪上小牛爷",
+        "interval_seconds": 30,
+        "rounds": 2,
+        "auto_send": True,
+        "log_path": log_path,
+        "cooldown_seconds": 90,
+        "context_rounds": 4,
+    }
+    assert "• 正在构建 loop agent" in result.stdout
+    assert "✅ loop 完成" in result.stdout

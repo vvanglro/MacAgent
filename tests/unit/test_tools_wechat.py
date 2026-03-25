@@ -16,6 +16,7 @@ from macagent.tools.wechat import (
     WeChatReadLastMessageHandler,
     WeChatSendMessageHandler,
     _chat_capture_region,
+    _chat_input_click_point,
     _collect_ocr_text,
     _extract_incoming_messages,
     _format_messages_output,
@@ -24,6 +25,7 @@ from macagent.tools.wechat import (
     _pick_contact_search_result,
     _parse_window_bounds,
     _search_result_click_point,
+    _wechat_window_bounds_script,
 )
 
 
@@ -42,19 +44,28 @@ class FakeExecutor:
 
 def test_wechat_handler_invokes_osascript_and_restores_clipboard() -> None:
     executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
     handler = WeChatSendMessageHandler(executor)
+    clicked_points: list[tuple[int, int]] = []
+    handler._click_at = lambda x, y: clicked_points.append((x, y))  # type: ignore[method-assign]
 
     handler.handle(Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"contact": "hulk", "text": "hello"}))
 
     assert executor.commands
     assert executor.commands[0] == ["open", "-a", "WeChat"]
-    assert executor.commands[1][0] == "osascript"
-    assert "savedClipboard" in executor.commands[1][2]
-    assert "set the clipboard to savedClipboard" in executor.commands[1][2]
-    assert 'tell application "WeChat" to activate' in executor.commands[1][2]
-    assert "searchFieldStillVisible" in executor.commands[1][2]
-    assert "key code 48" in executor.commands[1][2]
-    assert "key code 125" in executor.commands[1][2]
+    assert executor.commands[1] == ["osascript", "-e", 'tell application "WeChat" to activate']
+    assert "savedClipboard" in executor.commands[2][2]
+    assert "searchFieldStillVisible" in executor.commands[2][2]
+    assert executor.commands[3] == ["osascript", "-e", _wechat_window_bounds_script()]
+    assert executor.commands[4] == ["osascript", "-e", "delay 0.3"]
+    assert "set the clipboard to msgText" in executor.commands[5][2]
+    assert "set the clipboard to savedClipboard" in executor.commands[5][2]
+    assert clicked_points == [(720, 936)]
 
 
 def test_wechat_handler_rejects_missing_contact_or_text() -> None:
@@ -87,6 +98,10 @@ def test_parse_window_bounds_accepts_four_numbers() -> None:
 
 def test_chat_capture_region_focuses_message_area() -> None:
     assert _chat_capture_region((100, 200, 1000, 800)) == (400, 296, 670, 528)
+
+
+def test_chat_input_click_point_targets_input_box_area() -> None:
+    assert _chat_input_click_point((100, 200, 1000, 800)) == (720, 936)
 
 
 def test_search_result_click_point_converts_normalized_ocr_box_to_screen_coordinates() -> None:

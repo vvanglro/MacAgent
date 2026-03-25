@@ -352,9 +352,27 @@ class WeChatSendMessageHandler:
 
         emit_progress(self.reporter, f"正在打开微信并准备给 {contact} 发送消息")
         self.executor.run_or_raise(["open", "-a", "WeChat"])
-        script = _wechat_send_message_script(contact, text)
-        self.executor.run_or_raise(["osascript", "-e", script], timeout=30)
+        self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
+        self.executor.run_or_raise(["osascript", "-e", _wechat_open_chat_script(contact)], timeout=30)
+        bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
+        window_bounds = _parse_window_bounds(bounds_result.stdout)
+        emit_progress(self.reporter, "正在聚焦微信输入框")
+        self._focus_input_box(window_bounds)
+        emit_progress(self.reporter, "正在粘贴消息并发送")
+        self.executor.run_or_raise(["osascript", "-e", _wechat_paste_and_send_script(text)], timeout=30)
         return ActionResult(ok=True, action=ActionName.WECHAT_SEND_MESSAGE, message=f"消息已发送给 {contact}")
+
+    def _focus_input_box(self, window_bounds: tuple[int, int, int, int]) -> None:
+        click_x, click_y = _chat_input_click_point(window_bounds)
+        self._click_at(click_x, click_y)
+        self.executor.run_or_raise(["osascript", "-e", "delay 0.3"], timeout=5)
+
+    def _click_at(self, x: int, y: int) -> None:
+        with resources.as_file(resources.files("macagent.tools").joinpath("mouse_click.swift")) as script_path:
+            self.executor.run_or_raise(
+                ["swift", str(script_path), str(x), str(y)],
+                timeout=10,
+            )
 
 
 def _escape(value: str) -> str:
@@ -402,13 +420,11 @@ def _wechat_fill_search_box_script(contact: str) -> str:
     )
 
 
-def _wechat_send_message_script(contact: str, text: str) -> str:
+def _wechat_paste_and_send_script(text: str) -> str:
     return (
         'set savedClipboard to the clipboard\n'
         'try\n'
-        f'  set contactName to "{_escape(contact)}"\n'
         f'  set msgText to "{_escape(text)}"\n'
-        f'{_wechat_focus_contact_steps()}\n'
         '  tell application "System Events"\n'
         '    set the clipboard to msgText\n'
         '    keystroke "v" using command down\n'
@@ -419,8 +435,7 @@ def _wechat_send_message_script(contact: str, text: str) -> str:
         'on error errMsg number errNum\n'
         '  set the clipboard to savedClipboard\n'
         '  error errMsg number errNum\n'
-        'end try\n'
-        f'{_wechat_search_helpers()}'
+        'end try'
     )
 
 
@@ -523,6 +538,13 @@ def _search_results_region(window_bounds: tuple[int, int, int, int]) -> tuple[in
 
 def _format_region(region: tuple[int, int, int, int]) -> str:
     return ",".join(str(value) for value in region)
+
+
+def _chat_input_click_point(window_bounds: tuple[int, int, int, int]) -> tuple[int, int]:
+    x, y, width, height = window_bounds
+    click_x = x + int(width * 0.62)
+    click_y = y + int(height * 0.92)
+    return (click_x, click_y)
 
 
 def _parse_ocr_blocks(raw: str) -> list[OCRTextBlock]:

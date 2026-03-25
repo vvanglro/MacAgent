@@ -41,26 +41,18 @@ class WeChatReadLastMessageHandler:
         contact = str(action.params.get("contact", "")).strip()
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
+        window_bounds = None
         if contact:
-            self.executor.run_or_raise(["osascript", "-e", _wechat_open_chat_script(contact)], timeout=30)
+            bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
+            window_bounds = _parse_window_bounds(bounds_result.stdout)
+            self._open_chat_from_search(contact, window_bounds)
 
         bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
         window_bounds = _parse_window_bounds(bounds_result.stdout)
         capture_region = _chat_capture_region(window_bounds)
-
-        temp_fd, temp_path = tempfile.mkstemp(prefix="macagent-wechat-", suffix=".png")
-        os.close(temp_fd)
-        screenshot_path = Path(temp_path)
-        try:
-            self.executor.run_or_raise(
-                ["screencapture", "-x", "-R", _format_region(capture_region), str(screenshot_path)],
-                timeout=20,
-            )
-            blocks = self._recognize_text_blocks(screenshot_path)
-            message = _extract_last_message(blocks)
-            ocr_text = _collect_ocr_text(blocks)
-        finally:
-            screenshot_path.unlink(missing_ok=True)
+        blocks = self._capture_region_text_blocks(capture_region)
+        message = _extract_last_message(blocks)
+        ocr_text = _collect_ocr_text(blocks)
 
         return ActionResult(
             ok=True,
@@ -84,6 +76,39 @@ class WeChatReadLastMessageHandler:
                 timeout=30,
             )
         return _parse_ocr_blocks(result.stdout)
+
+    def _capture_region_text_blocks(self, region: tuple[int, int, int, int]) -> list[OCRTextBlock]:
+        temp_fd, temp_path = tempfile.mkstemp(prefix="macagent-wechat-", suffix=".png")
+        os.close(temp_fd)
+        screenshot_path = Path(temp_path)
+        try:
+            self.executor.run_or_raise(
+                ["screencapture", "-x", "-R", _format_region(region), str(screenshot_path)],
+                timeout=20,
+            )
+            return self._recognize_text_blocks(screenshot_path)
+        finally:
+            screenshot_path.unlink(missing_ok=True)
+
+    def _click_at(self, x: int, y: int) -> None:
+        with resources.as_file(resources.files("macagent.tools").joinpath("mouse_click.swift")) as script_path:
+            self.executor.run_or_raise(
+                ["swift", str(script_path), str(x), str(y)],
+                timeout=10,
+            )
+
+    def _open_chat_from_search(self, contact: str, window_bounds: tuple[int, int, int, int]) -> None:
+        self.executor.run_or_raise(["osascript", "-e", _wechat_fill_search_box_script(contact)], timeout=30)
+        search_region = _search_results_region(window_bounds)
+        blocks = self._capture_region_text_blocks(search_region)
+        target = _pick_contact_search_result(blocks, contact)
+        if target is None:
+            self.executor.run_or_raise(["osascript", "-e", _wechat_open_chat_script(contact)], timeout=30)
+            return
+
+        click_x, click_y = _search_result_click_point(target, search_region)
+        self._click_at(click_x, click_y)
+        self.executor.run_or_raise(["osascript", "-e", 'delay 1'], timeout=5)
 
 
 class WeChatSendMessageHandler:
@@ -116,7 +141,31 @@ def _wechat_open_chat_script(contact: str) -> str:
     return (
         'set savedClipboard to the clipboard\n'
         'try\n'
-        f'{_wechat_focus_contact_steps(contact)}\n'
+        f'  set contactName to "{_escape(contact)}"\n'
+        f'{_wechat_focus_contact_steps()}\n'
+        '  set the clipboard to savedClipboard\n'
+        'on error errMsg number errNum\n'
+        '  set the clipboard to savedClipboard\n'
+        '  error errMsg number errNum\n'
+        'end try\n'
+        f'{_wechat_search_helpers()}'
+    )
+
+
+def _wechat_fill_search_box_script(contact: str) -> str:
+    return (
+        'set savedClipboard to the clipboard\n'
+        'try\n'
+        f'  set contactName to "{_escape(contact)}"\n'
+        '  tell application "WeChat" to activate\n'
+        '  delay 1.5\n'
+        '  tell application "System Events"\n'
+        '    set the clipboard to contactName\n'
+        '    keystroke "f" using command down\n'
+        '    delay 0.5\n'
+        '    keystroke "v" using command down\n'
+        '  end tell\n'
+        '  delay 1\n'
         '  set the clipboard to savedClipboard\n'
         'on error errMsg number errNum\n'
         '  set the clipboard to savedClipboard\n'
@@ -129,8 +178,9 @@ def _wechat_send_message_script(contact: str, text: str) -> str:
     return (
         'set savedClipboard to the clipboard\n'
         'try\n'
+        f'  set contactName to "{_escape(contact)}"\n'
         f'  set msgText to "{_escape(text)}"\n'
-        f'{_wechat_focus_contact_steps(contact)}\n'
+        f'{_wechat_focus_contact_steps()}\n'
         '  tell application "System Events"\n'
         '    set the clipboard to msgText\n'
         '    keystroke "v" using command down\n'
@@ -141,13 +191,13 @@ def _wechat_send_message_script(contact: str, text: str) -> str:
         'on error errMsg number errNum\n'
         '  set the clipboard to savedClipboard\n'
         '  error errMsg number errNum\n'
-        'end try'
+        'end try\n'
+        f'{_wechat_search_helpers()}'
     )
 
 
-def _wechat_focus_contact_steps(contact: str) -> str:
+def _wechat_focus_contact_steps() -> str:
     return (
-        f'  set contactName to "{_escape(contact)}"\n'
         '  tell application "WeChat" to activate\n'
         '  delay 1.5\n'
         '  tell application "System Events"\n'
@@ -157,8 +207,41 @@ def _wechat_focus_contact_steps(contact: str) -> str:
         '    keystroke "v" using command down\n'
         '    delay 1\n'
         '    key code 36\n'
+        '    delay 0.8\n'
+        '    if my searchFieldStillVisible(contactName) then\n'
+        '      key code 48\n'
+        '      delay 0.2\n'
+        '      key code 36\n'
+        '      delay 0.8\n'
+        '    end if\n'
+        '    if my searchFieldStillVisible(contactName) then\n'
+        '      key code 125\n'
+        '      delay 0.2\n'
+        '      key code 36\n'
+        '      delay 0.8\n'
+        '    end if\n'
         '  end tell\n'
         '  delay 1'
+    )
+
+
+def _wechat_search_helpers() -> str:
+    return (
+        'on searchFieldStillVisible(expectedValue)\n'
+        '  tell application "System Events"\n'
+        '    tell process "WeChat"\n'
+        '      try\n'
+        '        repeat with fieldRef in text fields of front window\n'
+        '          try\n'
+        '            set fieldValue to value of fieldRef as text\n'
+        '            if fieldValue contains expectedValue then return true\n'
+        '          end try\n'
+        '        end repeat\n'
+        '      end try\n'
+        '    end tell\n'
+        '  end tell\n'
+        '  return false\n'
+        'end searchFieldStillVisible'
     )
 
 
@@ -198,6 +281,15 @@ def _chat_capture_region(window_bounds: tuple[int, int, int, int]) -> tuple[int,
     top = y + int(height * 0.12)
     capture_width = max(1, int(width * 0.67))
     capture_height = max(1, int(height * 0.66))
+    return (left, top, capture_width, capture_height)
+
+
+def _search_results_region(window_bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    x, y, width, height = window_bounds
+    left = x + int(width * 0.02)
+    top = y + int(height * 0.02)
+    capture_width = max(1, int(width * 0.52))
+    capture_height = max(1, int(height * 0.72))
     return (left, top, capture_width, capture_height)
 
 
@@ -260,3 +352,65 @@ def _is_probable_timestamp(block: OCRTextBlock) -> bool:
         return False
     center_x = (block.min_x + block.max_x) / 2
     return 0.15 <= center_x <= 0.85
+
+
+def _pick_contact_search_result(blocks: list[OCRTextBlock], contact: str) -> OCRTextBlock | None:
+    normalized_contact = contact.strip()
+    if not normalized_contact:
+        return None
+
+    candidates = [
+        block
+        for block in blocks
+        if normalized_contact in block.text and _block_center_y(block) < 0.88
+    ]
+    if not candidates:
+        return None
+
+    group_heading = next((block for block in blocks if block.text.strip() == "群聊"), None)
+    if group_heading is not None:
+        contact_candidates = [
+            block
+            for block in candidates
+            if _block_center_y(block) > _block_center_y(group_heading)
+        ]
+        if contact_candidates:
+            return min(contact_candidates, key=lambda block: _search_result_rank(block, normalized_contact))
+
+        group_candidates = [
+            block
+            for block in candidates
+            if _block_center_y(block) < _block_center_y(group_heading)
+        ]
+        if group_candidates:
+            return min(group_candidates, key=lambda block: _search_result_rank(block, normalized_contact))
+
+    return min(candidates, key=lambda block: _search_result_rank(block, normalized_contact))
+
+
+def _search_result_click_point(
+    block: OCRTextBlock,
+    region: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    left, top, width, height = region
+    center_x = (block.min_x + block.max_x) / 2
+    center_y = (block.min_y + block.max_y) / 2
+    absolute_x = left + int(width * center_x)
+    absolute_y = top + int(height * (1 - center_y))
+    return (absolute_x, absolute_y)
+
+
+def _block_center_y(block: OCRTextBlock) -> float:
+    return (block.min_y + block.max_y) / 2
+
+
+def _search_result_rank(block: OCRTextBlock, contact: str) -> tuple[int, int, float]:
+    text = block.text.strip()
+    if text == contact:
+        match_priority = 0
+    elif text.startswith(contact):
+        match_priority = 1
+    else:
+        match_priority = 2
+
+    return (match_priority, len(text), -_block_center_y(block))

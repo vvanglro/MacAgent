@@ -15,7 +15,9 @@ from macagent.tools.wechat import (
     _collect_ocr_text,
     _extract_last_message,
     _is_probable_timestamp,
+    _pick_contact_search_result,
     _parse_window_bounds,
+    _search_result_click_point,
 )
 
 
@@ -44,6 +46,9 @@ def test_wechat_handler_invokes_osascript_and_restores_clipboard() -> None:
     assert "savedClipboard" in executor.commands[1][2]
     assert "set the clipboard to savedClipboard" in executor.commands[1][2]
     assert 'tell application "WeChat" to activate' in executor.commands[1][2]
+    assert "searchFieldStillVisible" in executor.commands[1][2]
+    assert "key code 48" in executor.commands[1][2]
+    assert "key code 125" in executor.commands[1][2]
 
 
 def test_wechat_handler_rejects_missing_contact_or_text() -> None:
@@ -76,6 +81,15 @@ def test_parse_window_bounds_accepts_four_numbers() -> None:
 
 def test_chat_capture_region_focuses_message_area() -> None:
     assert _chat_capture_region((100, 200, 1000, 800)) == (400, 296, 670, 528)
+
+
+def test_search_result_click_point_converts_normalized_ocr_box_to_screen_coordinates() -> None:
+    point = _search_result_click_point(
+        OCRTextBlock(text="群聊", min_x=0.20, min_y=0.10, max_x=0.60, max_y=0.20),
+        (100, 200, 500, 400),
+    )
+
+    assert point == (300, 540)
 
 
 def test_extract_last_message_joins_bottom_multiline_cluster() -> None:
@@ -119,6 +133,34 @@ def test_is_probable_timestamp_recognizes_centered_time_label() -> None:
     ) is True
 
 
+def test_pick_contact_search_result_prefers_contact_match_before_group_section() -> None:
+    result = _pick_contact_search_result(
+        [
+            OCRTextBlock(text="纯洁友谊户", min_x=0.10, min_y=0.70, max_x=0.30, max_y=0.76),
+            OCRTextBlock(text="纯洁友谊户俱乐部", min_x=0.10, min_y=0.62, max_x=0.38, max_y=0.68),
+            OCRTextBlock(text="群聊", min_x=0.05, min_y=0.18, max_x=0.12, max_y=0.22),
+            OCRTextBlock(text="纯洁友谊户本圆⑤", min_x=0.16, min_y=0.06, max_x=0.45, max_y=0.12),
+        ],
+        "纯洁友谊户",
+    )
+
+    assert result is not None
+    assert result.text == "纯洁友谊户"
+
+
+def test_pick_contact_search_result_falls_back_to_group_when_no_contact_match() -> None:
+    result = _pick_contact_search_result(
+        [
+            OCRTextBlock(text="群聊", min_x=0.05, min_y=0.18, max_x=0.12, max_y=0.22),
+            OCRTextBlock(text="纯洁友谊户本圆⑤", min_x=0.16, min_y=0.06, max_x=0.45, max_y=0.12),
+        ],
+        "纯洁友谊户",
+    )
+
+    assert result is not None
+    assert result.text == "纯洁友谊户本圆⑤"
+
+
 def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None:
     executor = FakeExecutor()
     executor.responses["osascript"] = CompletedProcess(
@@ -139,6 +181,7 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
         stderr="",
     )
     handler = WeChatReadLastMessageHandler(executor)
+    captured_regions: list[tuple[int, int, int, int]] = []
 
     class FakeResources:
         def __enter__(self) -> Path:
@@ -155,6 +198,14 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
         "macagent.tools.wechat.resources.files",
         lambda _package: Path("/tmp"),
     )
+    monkeypatch.setattr(
+        handler,
+        "_capture_region_text_blocks",
+        lambda region: captured_regions.append(region) or [
+            OCRTextBlock(text="hello", min_x=0.65, min_y=0.08, max_x=0.82, max_y=0.12),
+            OCRTextBlock(text="earlier", min_x=0.12, min_y=0.30, max_x=0.28, max_y=0.34),
+        ],
+    )
 
     result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE))
 
@@ -162,12 +213,11 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
     assert result.metadata["last_message"] == "hello"
     assert result.message == "当前聊天最后一条消息: hello"
     assert result.metadata["ocr_text"] == ["earlier", "hello"]
+    assert captured_regions == [(400, 296, 670, 528)]
     assert executor.commands[0] == ["open", "-a", "WeChat"]
     assert executor.commands[1] == ["osascript", "-e", 'tell application "WeChat" to activate']
     assert executor.commands[2][0] == "osascript"
-    assert executor.commands[3][:3] == ["screencapture", "-x", "-R"]
-    assert executor.commands[3][3] == "400,296,670,528"
-    assert executor.commands[4][0] == "swift"
+    assert len(executor.commands) == 3
 
 
 def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monkeypatch) -> None:
@@ -189,6 +239,8 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
         stderr="",
     )
     handler = WeChatReadLastMessageHandler(executor)
+    captured_regions: list[tuple[int, int, int, int]] = []
+    clicked_points: list[tuple[int, int]] = []
 
     class FakeResources:
         def __enter__(self) -> Path:
@@ -205,13 +257,34 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
         "macagent.tools.wechat.resources.files",
         lambda _package: Path("/tmp"),
     )
+    monkeypatch.setattr(
+        handler,
+        "_capture_region_text_blocks",
+        lambda region: captured_regions.append(region) or (
+            [
+                OCRTextBlock(text="纯洁友谊户", min_x=0.10, min_y=0.72, max_x=0.28, max_y=0.78),
+                OCRTextBlock(text="群聊", min_x=0.05, min_y=0.18, max_x=0.12, max_y=0.22),
+                OCRTextBlock(text="纯洁友谊户本圆⑤", min_x=0.16, min_y=0.06, max_x=0.45, max_y=0.12),
+            ]
+            if len(captured_regions) == 1
+            else [
+                OCRTextBlock(text="晚上早点睡", min_x=0.65, min_y=0.08, max_x=0.90, max_y=0.12),
+            ]
+        ),
+    )
+    monkeypatch.setattr(handler, "_click_at", lambda x, y: clicked_points.append((x, y)))
 
-    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "不熬夜"}))
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "纯洁友谊户"}))
 
     assert result.ok is True
-    assert result.metadata["contact"] == "不熬夜"
-    assert result.message == "不熬夜 最后一条消息: 晚上早点睡"
-    assert executor.commands[2][0] == "osascript"
-    assert "contactName" in executor.commands[2][2]
-    assert "不熬夜" in executor.commands[2][2]
-    assert executor.commands[3][0] == "osascript"
+    assert result.metadata["contact"] == "纯洁友谊户"
+    assert result.message == "纯洁友谊户 最后一条消息: 晚上早点睡"
+    assert captured_regions == [
+        (120, 216, 520, 576),
+        (400, 296, 670, 528),
+    ]
+    assert clicked_points == [(218, 360)]
+    search_scripts = [command for command in executor.commands if command[0] == "osascript" and "contactName" in command[2]]
+    assert len(search_scripts) == 1
+    assert "纯洁友谊户" in search_scripts[0][2]
+    assert ["osascript", "-e", "delay 1"] in executor.commands

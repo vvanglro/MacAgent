@@ -9,6 +9,7 @@ from macagent.nlu.fallback_parser import RuleBasedParser
 from macagent.nlu.llm_parser import OpenAIParser
 from macagent.orchestrator.agent import MacAgent
 from macagent.orchestrator.registry import ActionRegistry
+from macagent.reporting import Reporter
 from macagent.tools.chrome import ChromeFocusAddressBarHandler, ChromeSearchHandler
 from macagent.tools.executor import CommandExecutor
 from macagent.tools.wechat import (
@@ -26,9 +27,9 @@ def main() -> None:
     """MacAgent CLI."""
 
 
-def build_agent(settings: Settings) -> MacAgent:
+def build_agent(settings: Settings, reporter: Reporter | None = None) -> MacAgent:
     executor = CommandExecutor()
-    registry = ActionRegistry()
+    registry = ActionRegistry(reporter=reporter)
     vision_reader = (
         WeChatChatVisionReader(
             model=settings.vision_model,
@@ -39,14 +40,20 @@ def build_agent(settings: Settings) -> MacAgent:
         else None
     )
 
-    registry.register(action_name=ActionName.WECHAT_OPEN, handler=WeChatOpenHandler(executor))
+    registry.register(action_name=ActionName.WECHAT_OPEN, handler=WeChatOpenHandler(executor, reporter=reporter))
     registry.register(
         action_name=ActionName.WECHAT_READ_LAST_MESSAGE,
-        handler=WeChatReadLastMessageHandler(executor, vision_reader=vision_reader),
+        handler=WeChatReadLastMessageHandler(executor, vision_reader=vision_reader, reporter=reporter),
     )
-    registry.register(action_name=ActionName.CHROME_FOCUS_ADDRESS_BAR, handler=ChromeFocusAddressBarHandler(executor))
-    registry.register(action_name=ActionName.CHROME_SEARCH, handler=ChromeSearchHandler(executor))
-    registry.register(action_name=ActionName.WECHAT_SEND_MESSAGE, handler=WeChatSendMessageHandler(executor))
+    registry.register(
+        action_name=ActionName.CHROME_FOCUS_ADDRESS_BAR,
+        handler=ChromeFocusAddressBarHandler(executor, reporter=reporter),
+    )
+    registry.register(action_name=ActionName.CHROME_SEARCH, handler=ChromeSearchHandler(executor, reporter=reporter))
+    registry.register(
+        action_name=ActionName.WECHAT_SEND_MESSAGE,
+        handler=WeChatSendMessageHandler(executor, reporter=reporter),
+    )
 
     parser = (
         OpenAIParser(
@@ -64,9 +71,12 @@ def build_agent(settings: Settings) -> MacAgent:
 def run(text: str, yes: bool = typer.Option(False, "--yes", help="Auto confirm sensitive actions")) -> None:
     """Run one natural-language instruction."""
     settings = Settings.from_env()
+    reporter = lambda message: typer.echo(f"• {message}")
 
     try:
-        agent = build_agent(settings)
+        typer.echo("• 正在解析指令并构建执行计划")
+        agent = build_agent(settings, reporter=reporter)
+        typer.echo("• 开始执行")
         result = agent.run(text, auto_confirm=yes)
         if result.ok:
             typer.echo(f"✅ {result.message}")

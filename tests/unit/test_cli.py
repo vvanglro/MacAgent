@@ -8,7 +8,7 @@ from macagent.domain.models import ActionName, ActionResult
 def test_cli_handles_build_agent_errors(monkeypatch) -> None:
     runner = CliRunner()
 
-    def _raise(_settings):
+    def _raise(_settings, reporter=None):
         raise ParseError("OpenAI parser requested but dependency is not installed")
 
     monkeypatch.setattr(cli, "build_agent", _raise)
@@ -33,7 +33,7 @@ def test_cli_run_accepts_text_and_yes_flag(monkeypatch) -> None:
                 message="sent",
             )
 
-    monkeypatch.setattr(cli, "build_agent", lambda _settings: FakeAgent())
+    monkeypatch.setattr(cli, "build_agent", lambda _settings, reporter=None: FakeAgent())
 
     result = runner.invoke(cli.app, ["run", "给小桃有点运气发微信说hello", "--yes"])
 
@@ -42,4 +42,6 @@ def test_cli_run_accepts_text_and_yes_flag(monkeypatch) -> None:
         "text": "给小桃有点运气发微信说hello",
         "auto_confirm": True,
     }
+    assert "• 正在解析指令并构建执行计划" in result.stdout
+    assert "• 开始执行" in result.stdout
     assert "✅ sent" in result.stdout

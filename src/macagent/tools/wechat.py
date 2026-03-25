@@ -12,6 +12,7 @@ from typing import Any
 
 from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName, ActionResult
+from macagent.reporting import Reporter, emit_progress
 from macagent.tools.executor import CommandExecutor
 
 
@@ -131,10 +132,12 @@ class WeChatChatVisionReader:
 
 
 class WeChatOpenHandler:
-    def __init__(self, executor: CommandExecutor) -> None:
+    def __init__(self, executor: CommandExecutor, reporter: Reporter | None = None) -> None:
         self.executor = executor
+        self.reporter = reporter
 
     def handle(self, action: Action) -> ActionResult:
+        emit_progress(self.reporter, "正在打开并激活微信")
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         script = 'tell application "WeChat" to activate'
         self.executor.run_or_raise(["osascript", "-e", script], timeout=20)
@@ -146,18 +149,22 @@ class WeChatReadLastMessageHandler:
         self,
         executor: CommandExecutor,
         vision_reader: WeChatChatVisionReader | None = None,
+        reporter: Reporter | None = None,
     ) -> None:
         self.executor = executor
         self.vision_reader = vision_reader
+        self.reporter = reporter
 
     def handle(self, action: Action) -> ActionResult:
         contact = str(action.params.get("contact", "")).strip()
         mode = str(action.params.get("mode", "all")).strip().lower() or "all"
         instruction = str(action.params.get("instruction", "")).strip()
+        emit_progress(self.reporter, f"准备读取微信聊天内容，模式：{_mode_display_name(mode)}")
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
         window_bounds = None
         if contact:
+            emit_progress(self.reporter, f"正在搜索并打开聊天：{contact}")
             bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
             window_bounds = _parse_window_bounds(bounds_result.stdout)
             self._open_chat_from_search(contact, window_bounds)
@@ -165,10 +172,12 @@ class WeChatReadLastMessageHandler:
         bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
         window_bounds = _parse_window_bounds(bounds_result.stdout)
         capture_region = _chat_capture_region(window_bounds)
+        emit_progress(self.reporter, "正在截取微信聊天区域")
         read_result, reader_backend = self._read_chat_messages(capture_region, mode=mode, instruction=instruction)
         incoming_messages = read_result.incoming_messages
         ocr_text = read_result.ocr_text
         summary = read_result.summary
+        emit_progress(self.reporter, f"聊天分析完成，识别后端：{reader_backend}")
 
         if mode == "summary":
             message = summary or _fallback_summary_from_ocr_text(ocr_text)
@@ -220,6 +229,7 @@ class WeChatReadLastMessageHandler:
         try:
             if self.vision_reader is not None:
                 try:
+                    emit_progress(self.reporter, "正在使用视觉模型分析截图")
                     result = self.vision_reader.read_messages(
                         screenshot_path,
                         mode=mode,
@@ -227,8 +237,10 @@ class WeChatReadLastMessageHandler:
                     )
                     return result, "vision_model"
                 except ExecutionError:
+                    emit_progress(self.reporter, "视觉模型分析失败，回退到本地 OCR")
                     pass
 
+            emit_progress(self.reporter, "正在使用本地 OCR 识别截图")
             blocks = self._recognize_text_blocks(screenshot_path)
             incoming_messages = _extract_incoming_messages(blocks, strict=mode != "summary")
             ocr_text = _collect_ocr_text(blocks)
@@ -270,22 +282,27 @@ class WeChatReadLastMessageHandler:
             )
 
     def _open_chat_from_search(self, contact: str, window_bounds: tuple[int, int, int, int]) -> None:
+        emit_progress(self.reporter, f"正在输入搜索词：{contact}")
         self.executor.run_or_raise(["osascript", "-e", _wechat_fill_search_box_script(contact)], timeout=30)
         search_region = _search_results_region(window_bounds)
+        emit_progress(self.reporter, "正在识别搜索结果并定位目标聊天")
         blocks = self._capture_region_text_blocks(search_region)
         target = _pick_contact_search_result(blocks, contact)
         if target is None:
+            emit_progress(self.reporter, "未命中可点击的搜索结果，回退到键盘导航")
             self.executor.run_or_raise(["osascript", "-e", _wechat_open_chat_script(contact)], timeout=30)
             return
 
         click_x, click_y = _search_result_click_point(target, search_region)
+        emit_progress(self.reporter, f"已定位到目标聊天：{target.text}")
         self._click_at(click_x, click_y)
         self.executor.run_or_raise(["osascript", "-e", 'delay 1'], timeout=5)
 
 
 class WeChatSendMessageHandler:
-    def __init__(self, executor: CommandExecutor) -> None:
+    def __init__(self, executor: CommandExecutor, reporter: Reporter | None = None) -> None:
         self.executor = executor
+        self.reporter = reporter
 
     def handle(self, action: Action) -> ActionResult:
         contact = str(action.params.get("contact", "")).strip()
@@ -295,6 +312,7 @@ class WeChatSendMessageHandler:
         if not text:
             raise ExecutionError("text is required")
 
+        emit_progress(self.reporter, f"正在打开微信并准备给 {contact} 发送消息")
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         script = _wechat_send_message_script(contact, text)
         self.executor.run_or_raise(["osascript", "-e", script], timeout=30)
@@ -660,3 +678,11 @@ def _clean_text_list(value: Any) -> list[str]:
         if text:
             cleaned.append(text)
     return cleaned
+
+
+def _mode_display_name(mode: str) -> str:
+    return {
+        "last": "最后一条消息",
+        "all": "全部收到的消息",
+        "summary": "聊天摘要",
+    }.get(mode, mode)

@@ -15,3 +15,13 @@ def test_registry_dispatches_to_registered_handler() -> None:
 
     assert result.ok is True
     assert result.message == "ok"
+
+
+def test_registry_emits_progress_message_before_dispatch() -> None:
+    messages: list[str] = []
+    reg = ActionRegistry(reporter=messages.append)
+    reg.register(ActionName.CHROME_SEARCH, DummyHandler())
+
+    reg.dispatch(Action(name=ActionName.CHROME_SEARCH, params={"query": "x"}))
+
+    assert messages == ["开始执行动作：Chrome 搜索"]

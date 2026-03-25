@@ -1,16 +1,33 @@
+import json
+from pathlib import Path
+from subprocess import CompletedProcess
+
 import pytest
 
 from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName
-from macagent.tools.wechat import WeChatSendMessageHandler
+from macagent.tools.wechat import (
+    OCRTextBlock,
+    WeChatOpenHandler,
+    WeChatReadLastMessageHandler,
+    WeChatSendMessageHandler,
+    _chat_capture_region,
+    _extract_last_message,
+    _parse_window_bounds,
+)
 
 
 class FakeExecutor:
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        self.responses: dict[str, CompletedProcess[str]] = {}
 
     def run_or_raise(self, command: list[str], timeout: int = 20):
         self.commands.append(command)
+        return self.responses.get(
+            command[0],
+            CompletedProcess(command, 0, stdout="", stderr=""),
+        )
 
 
 def test_wechat_handler_invokes_osascript_and_restores_clipboard() -> None:
@@ -20,9 +37,11 @@ def test_wechat_handler_invokes_osascript_and_restores_clipboard() -> None:
     handler.handle(Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"contact": "hulk", "text": "hello"}))
 
     assert executor.commands
-    assert executor.commands[0][0] == "osascript"
-    assert "savedClipboard" in executor.commands[0][2]
-    assert "set the clipboard to savedClipboard" in executor.commands[0][2]
+    assert executor.commands[0] == ["open", "-a", "WeChat"]
+    assert executor.commands[1][0] == "osascript"
+    assert "savedClipboard" in executor.commands[1][2]
+    assert "set the clipboard to savedClipboard" in executor.commands[1][2]
+    assert 'tell application "WeChat" to activate' in executor.commands[1][2]
 
 
 def test_wechat_handler_rejects_missing_contact_or_text() -> None:
@@ -34,3 +53,86 @@ def test_wechat_handler_rejects_missing_contact_or_text() -> None:
 
     with pytest.raises(ExecutionError):
         handler.handle(Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"contact": "hulk"}))
+
+
+def test_wechat_open_handler_launches_and_activates_wechat() -> None:
+    executor = FakeExecutor()
+    handler = WeChatOpenHandler(executor)
+
+    result = handler.handle(Action(name=ActionName.WECHAT_OPEN))
+
+    assert result.ok is True
+    assert executor.commands == [
+        ["open", "-a", "WeChat"],
+        ["osascript", "-e", 'tell application "WeChat" to activate'],
+    ]
+
+
+def test_parse_window_bounds_accepts_four_numbers() -> None:
+    assert _parse_window_bounds("120, 240, 900, 700") == (120, 240, 900, 700)
+
+
+def test_chat_capture_region_focuses_message_area() -> None:
+    assert _chat_capture_region((100, 200, 1000, 800)) == (340, 296, 730, 528)
+
+
+def test_extract_last_message_joins_bottom_multiline_cluster() -> None:
+    message = _extract_last_message(
+        [
+            OCRTextBlock(text="第二行", min_x=0.62, min_y=0.08, max_x=0.85, max_y=0.12),
+            OCRTextBlock(text="第一行", min_x=0.62, min_y=0.13, max_x=0.85, max_y=0.17),
+            OCRTextBlock(text="更早的消息", min_x=0.10, min_y=0.35, max_x=0.30, max_y=0.39),
+        ]
+    )
+
+    assert message == "第一行 第二行"
+
+
+def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    executor.responses["swift"] = CompletedProcess(
+        ["swift"],
+        0,
+        stdout=json.dumps(
+            [
+                {"text": "hello", "minX": 0.65, "minY": 0.08, "maxX": 0.82, "maxY": 0.12},
+                {"text": "earlier", "minX": 0.12, "minY": 0.30, "maxX": 0.28, "maxY": 0.34},
+            ]
+        ),
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+
+    class FakeResources:
+        def __enter__(self) -> Path:
+            return Path("/tmp/fake_vision_ocr.swift")
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.as_file",
+        lambda _path: FakeResources(),
+    )
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.files",
+        lambda _package: Path("/tmp"),
+    )
+
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE))
+
+    assert result.ok is True
+    assert result.metadata["last_message"] == "hello"
+    assert result.message == "当前聊天最后一条消息: hello"
+    assert executor.commands[0] == ["open", "-a", "WeChat"]
+    assert executor.commands[1] == ["osascript", "-e", 'tell application "WeChat" to activate']
+    assert executor.commands[2][0] == "osascript"
+    assert executor.commands[3][:3] == ["screencapture", "-x", "-R"]
+    assert executor.commands[3][3] == "340,296,730,528"
+    assert executor.commands[4][0] == "swift"

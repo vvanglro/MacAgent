@@ -5,6 +5,8 @@ from macagent.domain.models import Action, ActionName
 
 
 ALLOWED_ACTIONS = {
+    ActionName.WECHAT_OPEN,
+    ActionName.WECHAT_READ_LAST_MESSAGE,
     ActionName.WECHAT_SEND_MESSAGE,
     ActionName.CHROME_FOCUS_ADDRESS_BAR,
     ActionName.CHROME_SEARCH,

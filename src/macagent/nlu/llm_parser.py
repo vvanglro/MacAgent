@@ -4,9 +4,19 @@ import json
 from typing import Any
 
 from macagent.domain.errors import ParseError
-from macagent.domain.models import Action, ActionName
+from macagent.domain.models import Action, ActionName, ActionPlan
 
 ACTION_SCHEMAS: dict[ActionName, dict[str, Any]] = {
+    ActionName.WECHAT_OPEN: {
+        "required": set(),
+        "optional": set(),
+        "description": "Open or activate WeChat",
+    },
+    ActionName.WECHAT_READ_LAST_MESSAGE: {
+        "required": set(),
+        "optional": set(),
+        "description": "Read the last visible message in the current WeChat chat window",
+    },
     ActionName.WECHAT_SEND_MESSAGE: {
         "required": {"contact", "text"},
         "optional": set(),
@@ -28,19 +38,30 @@ ACTION_SCHEMAS: dict[ActionName, dict[str, Any]] = {
 class OpenAIParser:
     """Optional parser backend using OpenAI Chat Completions API.
 
-    Requires `openai` extra dependency and `OPENAI_API_KEY` environment variable.
+    Supports OpenAI-compatible providers via custom `base_url`, `api_key`, and `model`.
     """
 
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
         try:
             from openai import OpenAI
         except ImportError as exc:  # pragma: no cover - dependency optional
             raise ParseError("OpenAI parser requested but dependency is not installed") from exc
 
-        self.client = OpenAI()
+        client_kwargs: dict[str, str] = {}
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        self.client = OpenAI(**client_kwargs)
         self.model = model
 
-    def parse(self, text: str) -> Action:
+    def parse(self, text: str) -> ActionPlan:
         response = self.client.chat.completions.create(
             model=self.model,
             response_format={"type": "json_object"},
@@ -53,11 +74,18 @@ class OpenAIParser:
         try:
             content = response.choices[0].message.content
             payload = json.loads(content)
-            action = Action.model_validate(payload)
-            self._validate_action_params(action)
-            return action
+            if "actions" in payload:
+                plan = ActionPlan.model_validate(payload)
+            else:
+                plan = ActionPlan(actions=[Action.model_validate(payload)])
+            self._validate_action_plan(plan)
+            return plan
         except Exception as exc:  # pragma: no cover - network + schema failures
             raise ParseError("LLM 输出不是合法 action JSON") from exc
+
+    def _validate_action_plan(self, plan: ActionPlan) -> None:
+        for action in plan.actions:
+            self._validate_action_params(action)
 
     def _validate_action_params(self, action: Action) -> None:
         schema = ACTION_SCHEMAS[action.name]
@@ -76,11 +104,15 @@ class OpenAIParser:
 
     def _system_prompt(self) -> str:
         return (
-            "You map user text into a strict JSON action object with keys: "
-            "name, params, requires_confirmation. "
+            "You map user text into a strict JSON object. "
+            "Return either a single action object with keys name, params, requires_confirmation, "
+            "or a plan object with key actions containing a list of action objects. "
             "Allowed actions and exact params: "
+            "wechat.open => params {}, "
+            "wechat.read_last_message => params {}, "
             "wechat.send_message => params {contact: string, text: string}, "
             "chrome.focus_address_bar => params {}, "
             "chrome.search => params {query: string}. "
-            "Do not invent keys. Return JSON only."
+            "Use multiple actions when the user requests a sequence such as opening WeChat "
+            "and then sending a message. Do not invent keys. Return JSON only."
         )

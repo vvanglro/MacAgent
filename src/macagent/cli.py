@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typer
 
-from macagent.config import Settings
+from macagent.config import ParserBackend, Settings
 from macagent.domain.errors import MacAgentError
 from macagent.domain.models import ActionName
 from macagent.nlu.fallback_parser import RuleBasedParser
@@ -11,20 +11,39 @@ from macagent.orchestrator.agent import MacAgent
 from macagent.orchestrator.registry import ActionRegistry
 from macagent.tools.chrome import ChromeFocusAddressBarHandler, ChromeSearchHandler
 from macagent.tools.executor import CommandExecutor
-from macagent.tools.wechat import WeChatSendMessageHandler
+from macagent.tools.wechat import (
+    WeChatOpenHandler,
+    WeChatReadLastMessageHandler,
+    WeChatSendMessageHandler,
+)
 
-app = typer.Typer(help="MacAgent CLI")
+app = typer.Typer(help="MacAgent CLI", no_args_is_help=True)
+
+
+@app.callback()
+def main() -> None:
+    """MacAgent CLI."""
 
 
 def build_agent(settings: Settings) -> MacAgent:
     executor = CommandExecutor()
     registry = ActionRegistry()
 
+    registry.register(action_name=ActionName.WECHAT_OPEN, handler=WeChatOpenHandler(executor))
+    registry.register(action_name=ActionName.WECHAT_READ_LAST_MESSAGE, handler=WeChatReadLastMessageHandler(executor))
     registry.register(action_name=ActionName.CHROME_FOCUS_ADDRESS_BAR, handler=ChromeFocusAddressBarHandler(executor))
     registry.register(action_name=ActionName.CHROME_SEARCH, handler=ChromeSearchHandler(executor))
     registry.register(action_name=ActionName.WECHAT_SEND_MESSAGE, handler=WeChatSendMessageHandler(executor))
 
-    parser = OpenAIParser() if settings.parser_backend == "openai" else RuleBasedParser()
+    parser = (
+        OpenAIParser(
+            model=settings.openai_model,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
+        if settings.parser_backend == ParserBackend.OPENAI
+        else RuleBasedParser()
+    )
     return MacAgent(parser=parser, registry=registry, require_confirmation=settings.require_send_confirmation)
 
 

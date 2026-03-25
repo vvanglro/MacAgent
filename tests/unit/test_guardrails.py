@@ -14,3 +14,13 @@ def test_guardrails_reject_empty_query() -> None:
 def test_guardrails_accept_wechat_message() -> None:
     action = Action(name=ActionName.WECHAT_SEND_MESSAGE, params={"contact": "hulk", "text": "hello"})
     validate_action(action)
+
+
+def test_guardrails_accept_wechat_open() -> None:
+    action = Action(name=ActionName.WECHAT_OPEN)
+    validate_action(action)
+
+
+def test_guardrails_accept_wechat_read_last_message() -> None:
+    action = Action(name=ActionName.WECHAT_READ_LAST_MESSAGE)
+    validate_action(action)

@@ -23,6 +23,12 @@ class RuleBasedParser:
     READ_CONTACT_MESSAGES_PATTERN = re.compile(
         r"^(?:读取|查看|看看)(?:一下)?(?:微信(?:里|中)?(?:和)?|微信)?(?P<contact>.+?)(?:的)?消息$"
     )
+    READ_CONTACT_SUMMARY_PATTERN = re.compile(
+        r"^(?:读取|查看|看看|总结)(?:一下)?(?:我和|微信(?:里|中)?(?:和)?|微信)?\s*(?P<contact>.+?)\s*(?:的)?(?:聊天内容|都聊了些什么内容|都聊了什么内容|都聊了些什么|都聊了什么)$"
+    )
+    READ_CURRENT_SUMMARY_PATTERN = re.compile(
+        r"^(?:读取|查看|看看|总结)(?:一下)?(?:微信)?(?:当前聊天|当前会话|当前对话)?(?:的)?(?:聊天内容|都聊了些什么内容|都聊了什么内容|都聊了些什么|都聊了什么)$"
+    )
 
     def parse(self, text: str) -> ActionPlan:
         raw = text.strip()
@@ -57,13 +63,15 @@ class RuleBasedParser:
                     actions=[
                         Action(
                             name=ActionName.WECHAT_READ_LAST_MESSAGE,
-                            params={"contact": contact, "mode": "last"},
+                            params={"contact": contact, "mode": "last", "instruction": raw},
                         )
                     ]
                 )
 
         if self.READ_CURRENT_LAST_MESSAGE_PATTERN.search(raw):
-            return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last"})])
+            return ActionPlan(
+                actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last", "instruction": raw})]
+            )
 
         contact_messages_match = self.READ_CONTACT_MESSAGES_PATTERN.search(raw)
         if contact_messages_match:
@@ -73,13 +81,33 @@ class RuleBasedParser:
                     actions=[
                         Action(
                             name=ActionName.WECHAT_READ_LAST_MESSAGE,
-                            params={"contact": contact, "mode": "all"},
+                            params={"contact": contact, "mode": "all", "instruction": raw},
                         )
                     ]
                 )
 
         if self.READ_CURRENT_MESSAGES_PATTERN.search(raw):
-            return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "all"})])
+            return ActionPlan(
+                actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "all", "instruction": raw})]
+            )
+
+        contact_summary_match = self.READ_CONTACT_SUMMARY_PATTERN.search(raw)
+        if contact_summary_match:
+            contact = contact_summary_match.group("contact").strip()
+            if contact and contact not in {"当前聊天", "当前会话", "当前对话"}:
+                return ActionPlan(
+                    actions=[
+                        Action(
+                            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+                            params={"contact": contact, "mode": "summary", "instruction": raw},
+                        )
+                    ]
+                )
+
+        if self.READ_CURRENT_SUMMARY_PATTERN.search(raw):
+            return ActionPlan(
+                actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "summary", "instruction": raw})]
+            )
 
         if "聚焦" in raw and ("地址栏" in raw or "搜索栏" in raw):
             return ActionPlan(actions=[Action(name=ActionName.CHROME_FOCUS_ADDRESS_BAR)])

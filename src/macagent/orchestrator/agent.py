@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from macagent.domain.models import Action, ActionPlan, ActionResult
+from macagent.domain.models import Action, ActionName, ActionPlan, ActionResult
 from macagent.nlu.parser import ActionParser
 from macagent.orchestrator.guardrails import validate_action
 from macagent.orchestrator.registry import ActionRegistry
@@ -14,6 +14,7 @@ class MacAgent:
 
     def run(self, text: str, auto_confirm: bool = False) -> ActionResult:
         plan = self._ensure_plan(self.parser.parse(text))
+        self._attach_read_instruction(plan, text)
         for action in plan.actions:
             validate_action(action)
 
@@ -57,3 +58,8 @@ class MacAgent:
             if action.requires_confirmation:
                 return action.name
         return plan.actions[-1].name
+
+    def _attach_read_instruction(self, plan: ActionPlan, text: str) -> None:
+        for action in plan.actions:
+            if action.name == ActionName.WECHAT_READ_LAST_MESSAGE and "instruction" not in action.params:
+                action.params["instruction"] = text

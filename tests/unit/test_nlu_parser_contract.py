@@ -37,7 +37,7 @@ def test_rule_parser_outputs_wechat_read_last_message_action() -> None:
     plan = parser.parse("读取当前聊天最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"mode": "last"}
+    assert plan.actions[0].params == {"mode": "last", "instruction": "读取当前聊天最后一条消息"}
 
 
 def test_rule_parser_outputs_wechat_read_last_message_for_contact() -> None:
@@ -45,7 +45,7 @@ def test_rule_parser_outputs_wechat_read_last_message_for_contact() -> None:
     plan = parser.parse("读取不熬夜最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "last"}
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "last", "instruction": "读取不熬夜最后一条消息"}
 
 
 def test_rule_parser_reads_all_messages_for_contact_when_not_explicit_last() -> None:
@@ -53,7 +53,7 @@ def test_rule_parser_reads_all_messages_for_contact_when_not_explicit_last() -> 
     plan = parser.parse("读取不熬夜消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "all"}
+    assert plan.actions[0].params == {"contact": "不熬夜", "mode": "all", "instruction": "读取不熬夜消息"}
 
 
 def test_rule_parser_reads_all_messages_for_current_chat_when_not_explicit_last() -> None:
@@ -61,4 +61,16 @@ def test_rule_parser_reads_all_messages_for_current_chat_when_not_explicit_last(
     plan = parser.parse("读取当前聊天消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
-    assert plan.actions[0].params == {"mode": "all"}
+    assert plan.actions[0].params == {"mode": "all", "instruction": "读取当前聊天消息"}
+
+
+def test_rule_parser_summarizes_contact_chat_content() -> None:
+    parser = RuleBasedParser()
+    plan = parser.parse("读取一下我和 沪上小牛爷 都聊了些什么内容")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {
+        "contact": "沪上小牛爷",
+        "mode": "summary",
+        "instruction": "读取一下我和 沪上小牛爷 都聊了些什么内容",
+    }

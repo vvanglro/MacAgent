@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName, ActionResult
@@ -22,6 +24,112 @@ class OCRTextBlock:
     max_y: float
 
 
+@dataclass(frozen=True)
+class VisualReadResult:
+    incoming_messages: list[str]
+    ocr_text: list[str]
+    summary: str | None = None
+
+
+class WeChatChatVisionReader:
+    def __init__(
+        self,
+        model: str | None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        if not model:
+            raise ExecutionError("vision model is required")
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ExecutionError("Vision model requested but dependency is not installed") from exc
+
+        client_kwargs: dict[str, str] = {}
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        self.client = OpenAI(**client_kwargs)
+        self.model = model
+
+    def read_messages(self, image_path: Path, mode: str = "all", instruction: str | None = None) -> VisualReadResult:
+        payload = self._request_payload(image_path, mode=mode, instruction=instruction)
+        incoming_messages = _clean_text_list(payload.get("incoming_messages"))
+        ocr_text = _clean_text_list(payload.get("ocr_text"))
+        summary = str(payload.get("summary", "")).strip() or None
+
+        if mode != "summary" and not incoming_messages:
+            raise ExecutionError("Vision model could not find any incoming messages in the chat screenshot")
+
+        if not ocr_text:
+            ocr_text = incoming_messages.copy()
+
+        return VisualReadResult(incoming_messages=incoming_messages, ocr_text=ocr_text, summary=summary)
+
+    def _request_payload(self, image_path: Path, mode: str, instruction: str | None) -> dict[str, Any]:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": self._system_prompt()},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": self._user_prompt(mode=mode, instruction=instruction),
+                            },
+                            {"type": "image_url", "image_url": {"url": _image_path_to_data_url(image_path)}},
+                        ],
+                    },
+                ],
+            )
+        except Exception as exc:  # pragma: no cover - SDK/provider failures
+            raise ExecutionError("Vision model request failed") from exc
+
+        try:
+            content = response.choices[0].message.content
+            payload = json.loads(content)
+        except Exception as exc:  # pragma: no cover - network + provider failures
+            raise ExecutionError("Vision model output was not valid JSON") from exc
+
+        if not isinstance(payload, dict):
+            raise ExecutionError("Vision model output must be a JSON object")
+        return payload
+
+    def _system_prompt(self) -> str:
+        return (
+            "You analyze a WeChat desktop chat screenshot. "
+            "Return JSON only with keys incoming_messages, ocr_text, and summary. "
+            "incoming_messages must be an array of visible left-side received messages only, ordered from oldest to newest. "
+            "If a left-side bubble is an emoji, sticker, image, or other non-text content, describe it briefly in Chinese instead of omitting it. "
+            "ocr_text must be an array of all visible readable text snippets from the screenshot, ordered from top to bottom. "
+            "summary must be a concise Chinese summary of the visible conversation when the user asks for a summary; otherwise return an empty string. "
+            "Ignore timestamps as messages."
+        )
+
+    def _user_prompt(self, mode: str, instruction: str | None) -> str:
+        intent_text = instruction.strip() if instruction else ""
+        if mode == "last":
+            goal = "Return the latest visible incoming message from the left side."
+        elif mode == "summary":
+            goal = "Summarize what the visible conversation is about, using both left-side and right-side content."
+        else:
+            goal = "Return all visible incoming messages from the left side."
+
+        return (
+            "Read this WeChat chat screenshot. "
+            f"{goal} "
+            "Treat right-side bubbles as messages sent by the current user. "
+            "Ignore avatars and app chrome. "
+            f"User request: {intent_text or '读取当前聊天内容'}"
+        )
+
+
 class WeChatOpenHandler:
     def __init__(self, executor: CommandExecutor) -> None:
         self.executor = executor
@@ -34,12 +142,18 @@ class WeChatOpenHandler:
 
 
 class WeChatReadLastMessageHandler:
-    def __init__(self, executor: CommandExecutor) -> None:
+    def __init__(
+        self,
+        executor: CommandExecutor,
+        vision_reader: WeChatChatVisionReader | None = None,
+    ) -> None:
         self.executor = executor
+        self.vision_reader = vision_reader
 
     def handle(self, action: Action) -> ActionResult:
         contact = str(action.params.get("contact", "")).strip()
         mode = str(action.params.get("mode", "all")).strip().lower() or "all"
+        instruction = str(action.params.get("instruction", "")).strip()
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
         window_bounds = None
@@ -51,16 +165,33 @@ class WeChatReadLastMessageHandler:
         bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
         window_bounds = _parse_window_bounds(bounds_result.stdout)
         capture_region = _chat_capture_region(window_bounds)
-        blocks = self._capture_region_text_blocks(capture_region)
-        incoming_messages = _extract_incoming_messages(blocks)
-        message = incoming_messages[-1] if mode == "last" else _format_messages_output(incoming_messages)
-        ocr_text = _collect_ocr_text(blocks)
+        read_result, reader_backend = self._read_chat_messages(capture_region, mode=mode, instruction=instruction)
+        incoming_messages = read_result.incoming_messages
+        ocr_text = read_result.ocr_text
+        summary = read_result.summary
+
+        if mode == "summary":
+            message = summary or _fallback_summary_from_ocr_text(ocr_text)
+            if not message:
+                raise ExecutionError("No readable chat content found in the current WeChat chat window")
+        elif mode == "last":
+            if not incoming_messages:
+                raise ExecutionError("No readable incoming message found in the current WeChat chat window")
+            message = incoming_messages[-1]
+        else:
+            if not incoming_messages:
+                raise ExecutionError("No readable incoming message found in the current WeChat chat window")
+            message = _format_messages_output(incoming_messages)
 
         return ActionResult(
             ok=True,
             action=ActionName.WECHAT_READ_LAST_MESSAGE,
             message=(
-                f"{contact} 最后一条消息: {message}"
+                f"{contact} 可见聊天内容摘要: {message}"
+                if mode == "summary" and contact
+                else f"当前聊天可见内容摘要: {message}"
+                if mode == "summary"
+                else f"{contact} 最后一条消息: {message}"
                 if mode == "last" and contact
                 else f"当前聊天最后一条消息: {message}"
                 if mode == "last"
@@ -69,13 +200,42 @@ class WeChatReadLastMessageHandler:
                 else f"当前聊天收到的消息:\n{message}"
             ),
             metadata={
-                "last_message": incoming_messages[-1],
+                "last_message": incoming_messages[-1] if incoming_messages else None,
                 "incoming_messages": incoming_messages,
                 "contact": contact or None,
                 "mode": mode,
                 "ocr_text": ocr_text,
+                "summary": summary or None,
+                "reader_backend": reader_backend,
             },
         )
+
+    def _read_chat_messages(
+        self,
+        region: tuple[int, int, int, int],
+        mode: str,
+        instruction: str,
+    ) -> tuple[VisualReadResult, str]:
+        screenshot_path = self._capture_region_image(region)
+        try:
+            if self.vision_reader is not None:
+                try:
+                    result = self.vision_reader.read_messages(
+                        screenshot_path,
+                        mode=mode,
+                        instruction=instruction,
+                    )
+                    return result, "vision_model"
+                except ExecutionError:
+                    pass
+
+            blocks = self._recognize_text_blocks(screenshot_path)
+            incoming_messages = _extract_incoming_messages(blocks, strict=mode != "summary")
+            ocr_text = _collect_ocr_text(blocks)
+            summary = _fallback_summary_from_ocr_text(ocr_text) if mode == "summary" else None
+            return VisualReadResult(incoming_messages=incoming_messages, ocr_text=ocr_text, summary=summary), "macos_vision"
+        finally:
+            screenshot_path.unlink(missing_ok=True)
 
     def _recognize_text_blocks(self, image_path: Path) -> list[OCRTextBlock]:
         with resources.as_file(resources.files("macagent.tools").joinpath("vision_ocr.swift")) as script_path:
@@ -85,15 +245,19 @@ class WeChatReadLastMessageHandler:
             )
         return _parse_ocr_blocks(result.stdout)
 
-    def _capture_region_text_blocks(self, region: tuple[int, int, int, int]) -> list[OCRTextBlock]:
+    def _capture_region_image(self, region: tuple[int, int, int, int]) -> Path:
         temp_fd, temp_path = tempfile.mkstemp(prefix="macagent-wechat-", suffix=".png")
         os.close(temp_fd)
         screenshot_path = Path(temp_path)
+        self.executor.run_or_raise(
+            ["screencapture", "-x", "-R", _format_region(region), str(screenshot_path)],
+            timeout=20,
+        )
+        return screenshot_path
+
+    def _capture_region_text_blocks(self, region: tuple[int, int, int, int]) -> list[OCRTextBlock]:
+        screenshot_path = self._capture_region_image(region)
         try:
-            self.executor.run_or_raise(
-                ["screencapture", "-x", "-R", _format_region(region), str(screenshot_path)],
-                timeout=20,
-            )
             return self._recognize_text_blocks(screenshot_path)
         finally:
             screenshot_path.unlink(missing_ok=True)
@@ -328,14 +492,16 @@ def _parse_ocr_blocks(raw: str) -> list[OCRTextBlock]:
     return blocks
 
 
-def _extract_incoming_messages(blocks: list[OCRTextBlock]) -> list[str]:
+def _extract_incoming_messages(blocks: list[OCRTextBlock], strict: bool = True) -> list[str]:
     message_blocks = [
         block
         for block in blocks
         if not _is_probable_timestamp(block) and _is_incoming_message_block(block)
     ]
-    if not message_blocks:
+    if not message_blocks and strict:
         raise ExecutionError("No readable message found in the current WeChat chat window")
+    if not message_blocks:
+        return []
 
     sorted_blocks = sorted(message_blocks, key=lambda block: (block.min_y, block.min_x))
     clusters: list[list[OCRTextBlock]] = []
@@ -364,8 +530,10 @@ def _extract_incoming_messages(blocks: list[OCRTextBlock]) -> list[str]:
         if message:
             messages.append(message)
 
-    if not messages:
+    if not messages and strict:
         raise ExecutionError("No readable message found in the current WeChat chat window")
+    if not messages:
+        return []
 
     return messages
 
@@ -389,6 +557,30 @@ def _is_incoming_message_block(block: OCRTextBlock) -> bool:
 
 def _format_messages_output(messages: list[str]) -> str:
     return "\n".join(f"{index}. {message}" for index, message in enumerate(messages, start=1))
+
+
+def _fallback_summary_from_ocr_text(ocr_text: list[str]) -> str:
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for text in ocr_text:
+        cleaned = text.strip()
+        if not cleaned or re.fullmatch(r"\d{1,2}:\d{2}", cleaned):
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        filtered.append(cleaned)
+
+    if not filtered:
+        return ""
+
+    if len(filtered) == 1:
+        return filtered[0]
+
+    preview = "；".join(filtered[:5])
+    if len(filtered) > 5:
+        preview += "；……"
+    return preview
 
 
 def _pick_contact_search_result(blocks: list[OCRTextBlock], contact: str) -> OCRTextBlock | None:
@@ -451,3 +643,20 @@ def _search_result_rank(block: OCRTextBlock, contact: str) -> tuple[int, int, fl
         match_priority = 2
 
     return (match_priority, len(text), -_block_center_y(block))
+
+
+def _image_path_to_data_url(image_path: Path) -> str:
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _clean_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    cleaned: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned

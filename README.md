@@ -32,6 +32,9 @@ macagent run "搜索 macagent"
 - `MACAGENT_OPENAI_MODEL=...`（默认 `gpt-4o-mini`）
 - `MACAGENT_OPENAI_BASE_URL=...`（可选，适配第三方 OpenAI-compatible 服务）
 - `MACAGENT_OPENAI_API_KEY=...`（可选，未设置时回退到 `OPENAI_API_KEY`）
+- `MACAGENT_VISION_MODEL=...`（可选，配置后读取微信消息时优先用视觉模型识图）
+- `MACAGENT_VISION_BASE_URL=...`（可选，未设置时回退到 `MACAGENT_OPENAI_BASE_URL`）
+- `MACAGENT_VISION_API_KEY=...`（可选，未设置时回退到 `MACAGENT_OPENAI_API_KEY`/`OPENAI_API_KEY`）
 
 > 若使用 `openai` parser：
 ```bash
@@ -46,6 +49,14 @@ export MACAGENT_OPENAI_BASE_URL=https://your-provider.example.com/v1
 export MACAGENT_OPENAI_API_KEY=your-key
 export MACAGENT_OPENAI_MODEL=gpt-4o-mini
 macagent run "打开微信 给hulk发微信说hello" --yes
+```
+
+> 若希望读取微信消息时优先使用视觉模型：
+```bash
+export MACAGENT_VISION_MODEL=gpt-4.1-mini
+export MACAGENT_VISION_BASE_URL=https://your-provider.example.com/v1
+export MACAGENT_VISION_API_KEY=your-key
+macagent run "读取不熬夜消息"
 ```
 
 ## Project Structure

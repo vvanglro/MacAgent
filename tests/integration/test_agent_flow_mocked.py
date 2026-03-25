@@ -89,3 +89,21 @@ def test_agent_executes_read_last_message_action() -> None:
 
     assert result.ok is True
     assert result.message == "当前聊天最后一条消息: hello"
+
+
+def test_agent_attaches_original_instruction_to_read_action() -> None:
+    captured: dict[str, str] = {}
+
+    class CapturingHandler:
+        def handle(self, action: Action) -> ActionResult:
+            captured["instruction"] = action.params["instruction"]
+            return ActionResult(ok=True, action=action.name, message="done")
+
+    reg = ActionRegistry()
+    reg.register(ActionName.WECHAT_READ_LAST_MESSAGE, CapturingHandler())
+
+    agent = MacAgent(parser=ReadLastMessageParser(), registry=reg)
+    result = agent.run("读取一下我和 沪上小牛爷 都聊了些什么内容")
+
+    assert result.ok is True
+    assert captured["instruction"] == "读取一下我和 沪上小牛爷 都聊了些什么内容"

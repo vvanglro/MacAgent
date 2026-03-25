@@ -12,6 +12,7 @@ from macagent.orchestrator.registry import ActionRegistry
 from macagent.tools.chrome import ChromeFocusAddressBarHandler, ChromeSearchHandler
 from macagent.tools.executor import CommandExecutor
 from macagent.tools.wechat import (
+    WeChatChatVisionReader,
     WeChatOpenHandler,
     WeChatReadLastMessageHandler,
     WeChatSendMessageHandler,
@@ -28,9 +29,21 @@ def main() -> None:
 def build_agent(settings: Settings) -> MacAgent:
     executor = CommandExecutor()
     registry = ActionRegistry()
+    vision_reader = (
+        WeChatChatVisionReader(
+            model=settings.vision_model,
+            api_key=settings.vision_api_key,
+            base_url=settings.vision_base_url,
+        )
+        if settings.vision_model
+        else None
+    )
 
     registry.register(action_name=ActionName.WECHAT_OPEN, handler=WeChatOpenHandler(executor))
-    registry.register(action_name=ActionName.WECHAT_READ_LAST_MESSAGE, handler=WeChatReadLastMessageHandler(executor))
+    registry.register(
+        action_name=ActionName.WECHAT_READ_LAST_MESSAGE,
+        handler=WeChatReadLastMessageHandler(executor, vision_reader=vision_reader),
+    )
     registry.register(action_name=ActionName.CHROME_FOCUS_ADDRESS_BAR, handler=ChromeFocusAddressBarHandler(executor))
     registry.register(action_name=ActionName.CHROME_SEARCH, handler=ChromeSearchHandler(executor))
     registry.register(action_name=ActionName.WECHAT_SEND_MESSAGE, handler=WeChatSendMessageHandler(executor))

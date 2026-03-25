@@ -1,6 +1,8 @@
 import json
+import sys
 from pathlib import Path
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +10,8 @@ from macagent.domain.errors import ExecutionError
 from macagent.domain.models import Action, ActionName
 from macagent.tools.wechat import (
     OCRTextBlock,
+    VisualReadResult,
+    WeChatChatVisionReader,
     WeChatOpenHandler,
     WeChatReadLastMessageHandler,
     WeChatSendMessageHandler,
@@ -198,29 +202,13 @@ def test_wechat_read_last_message_handler_reads_all_incoming_messages_by_default
     )
     handler = WeChatReadLastMessageHandler(executor)
     captured_regions: list[tuple[int, int, int, int]] = []
-
-    class FakeResources:
-        def __enter__(self) -> Path:
-            return Path("/tmp/fake_vision_ocr.swift")
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-    monkeypatch.setattr(
-        "macagent.tools.wechat.resources.as_file",
-        lambda _path: FakeResources(),
-    )
-    monkeypatch.setattr(
-        "macagent.tools.wechat.resources.files",
-        lambda _package: Path("/tmp"),
-    )
     monkeypatch.setattr(
         handler,
-        "_capture_region_text_blocks",
-        lambda region: captured_regions.append(region) or [
-            OCRTextBlock(text="hello", min_x=0.18, min_y=0.08, max_x=0.35, max_y=0.12),
-            OCRTextBlock(text="earlier", min_x=0.12, min_y=0.30, max_x=0.28, max_y=0.34),
-        ],
+        "_read_chat_messages",
+        lambda region, mode, instruction: captured_regions.append(region) or (
+            VisualReadResult(incoming_messages=["earlier", "hello"], ocr_text=["earlier", "hello"]),
+            "macos_vision",
+        ),
     )
 
     result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE))
@@ -247,30 +235,16 @@ def test_wechat_read_last_message_handler_returns_latest_incoming_message_only_w
     )
     handler = WeChatReadLastMessageHandler(executor)
     captured_regions: list[tuple[int, int, int, int]] = []
-
-    class FakeResources:
-        def __enter__(self) -> Path:
-            return Path("/tmp/fake_vision_ocr.swift")
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-    monkeypatch.setattr(
-        "macagent.tools.wechat.resources.as_file",
-        lambda _path: FakeResources(),
-    )
-    monkeypatch.setattr(
-        "macagent.tools.wechat.resources.files",
-        lambda _package: Path("/tmp"),
-    )
     monkeypatch.setattr(
         handler,
-        "_capture_region_text_blocks",
-        lambda region: captured_regions.append(region) or [
-            OCRTextBlock(text="hello", min_x=0.18, min_y=0.08, max_x=0.35, max_y=0.12),
-            OCRTextBlock(text="我发的", min_x=0.72, min_y=0.16, max_x=0.88, max_y=0.20),
-            OCRTextBlock(text="earlier", min_x=0.12, min_y=0.30, max_x=0.28, max_y=0.34),
-        ],
+        "_read_chat_messages",
+        lambda region, mode, instruction: captured_regions.append(region) or (
+            VisualReadResult(
+                incoming_messages=["earlier", "hello"],
+                ocr_text=["earlier", "我发的", "hello"],
+            ),
+            "macos_vision",
+        ),
     )
 
     result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last"}))
@@ -281,6 +255,72 @@ def test_wechat_read_last_message_handler_returns_latest_incoming_message_only_w
     assert result.message == "当前聊天最后一条消息: hello"
     assert result.metadata["mode"] == "last"
     assert captured_regions == [(400, 296, 670, 528)]
+
+
+def test_wechat_read_last_message_handler_prefers_visual_reader_when_configured(tmp_path) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    screenshot_path = tmp_path / "wechat.png"
+    screenshot_path.write_bytes(b"fake-image")
+
+    class FakeVisionReader:
+        def __init__(self) -> None:
+            self.paths: list[Path] = []
+
+        def read_messages(self, image_path: Path, mode: str = "all", instruction: str | None = None) -> VisualReadResult:
+            self.paths.append(image_path)
+            return VisualReadResult(
+                incoming_messages=["第一条", "第二条"],
+                ocr_text=["全部识别文本", "第二条"],
+            )
+
+    vision_reader = FakeVisionReader()
+    handler = WeChatReadLastMessageHandler(executor, vision_reader=vision_reader)
+    handler._capture_region_image = lambda _region: screenshot_path  # type: ignore[method-assign]
+    handler._recognize_text_blocks = lambda _image_path: (_ for _ in ()).throw(AssertionError("should not use local OCR"))  # type: ignore[method-assign]
+
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE))
+
+    assert result.ok is True
+    assert result.message == "当前聊天收到的消息:\n1. 第一条\n2. 第二条"
+    assert result.metadata["incoming_messages"] == ["第一条", "第二条"]
+    assert result.metadata["ocr_text"] == ["全部识别文本", "第二条"]
+    assert result.metadata["reader_backend"] == "vision_model"
+    assert vision_reader.paths == [screenshot_path]
+
+
+def test_wechat_read_last_message_handler_falls_back_to_local_ocr_when_visual_reader_fails(tmp_path) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    screenshot_path = tmp_path / "wechat.png"
+    screenshot_path.write_bytes(b"fake-image")
+
+    class FailingVisionReader:
+        def read_messages(self, image_path: Path, mode: str = "all", instruction: str | None = None) -> VisualReadResult:
+            raise ExecutionError(f"vision failed for {image_path.name}")
+
+    handler = WeChatReadLastMessageHandler(executor, vision_reader=FailingVisionReader())
+    handler._capture_region_image = lambda _region: screenshot_path  # type: ignore[method-assign]
+    handler._recognize_text_blocks = lambda _image_path: [  # type: ignore[method-assign]
+        OCRTextBlock(text="收到的", min_x=0.18, min_y=0.08, max_x=0.35, max_y=0.12),
+        OCRTextBlock(text="我发的", min_x=0.72, min_y=0.16, max_x=0.88, max_y=0.20),
+    ]
+
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last"}))
+
+    assert result.ok is True
+    assert result.message == "当前聊天最后一条消息: 收到的"
+    assert result.metadata["reader_backend"] == "macos_vision"
 
 
 def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monkeypatch) -> None:
@@ -335,6 +375,14 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
             ]
         ),
     )
+    monkeypatch.setattr(
+        handler,
+        "_read_chat_messages",
+        lambda region, mode, instruction: captured_regions.append(region) or (
+            VisualReadResult(incoming_messages=["晚上早点睡"], ocr_text=["晚上早点睡"]),
+            "macos_vision",
+        ),
+    )
     monkeypatch.setattr(handler, "_click_at", lambda x, y: clicked_points.append((x, y)))
 
     result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "纯洁友谊户", "mode": "last"}))
@@ -351,3 +399,91 @@ def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monke
     assert len(search_scripts) == 1
     assert "纯洁友谊户" in search_scripts[0][2]
     assert ["osascript", "-e", "delay 1"] in executor.commands
+
+
+def test_wechat_chat_vision_reader_passes_openai_compatible_config(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            self.chat = None
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    reader = WeChatChatVisionReader(
+        model="gpt-4.1-mini",
+        api_key="vision-key",
+        base_url="https://vision.example.com/v1",
+    )
+
+    assert reader.model == "gpt-4.1-mini"
+    assert captured == {
+        "api_key": "vision-key",
+        "base_url": "https://vision.example.com/v1",
+    }
+
+
+def test_wechat_read_last_message_handler_summary_mode_uses_summary_text(monkeypatch) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+    monkeypatch.setattr(handler, "_open_chat_from_search", lambda contact, window_bounds: None)
+
+    monkeypatch.setattr(
+        handler,
+        "_read_chat_messages",
+        lambda region, mode, instruction: (
+            VisualReadResult(
+                incoming_messages=["[表情: 可怜巴巴]", "[表情: 无语流汗]"],
+                ocr_text=["得给你改个备注了", "emoji有点难搞"],
+                summary="你们在聊给对方改备注，以及 emoji 不太好处理；对方主要发了两个表情回应。",
+            ),
+            "vision_model",
+        ),
+    )
+
+    result = handler.handle(
+        Action(
+            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+            params={"contact": "沪上小牛爷", "mode": "summary", "instruction": "读取一下我和 沪上小牛爷 都聊了些什么内容"},
+        )
+    )
+
+    assert result.ok is True
+    assert result.message == "沪上小牛爷 可见聊天内容摘要: 你们在聊给对方改备注，以及 emoji 不太好处理；对方主要发了两个表情回应。"
+    assert result.metadata["summary"] == "你们在聊给对方改备注，以及 emoji 不太好处理；对方主要发了两个表情回应。"
+    assert result.metadata["reader_backend"] == "vision_model"
+
+
+def test_wechat_read_last_message_handler_summary_mode_falls_back_to_visible_ocr_text() -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+    handler._capture_region_image = lambda _region: Path("/tmp/fake-wechat.png")  # type: ignore[method-assign]
+    handler._recognize_text_blocks = lambda _image_path: [  # type: ignore[method-assign]
+        OCRTextBlock(text="得给你改个备注了", min_x=0.70, min_y=0.18, max_x=0.88, max_y=0.24),
+        OCRTextBlock(text="emoji有点难搞", min_x=0.70, min_y=0.28, max_x=0.88, max_y=0.34),
+        OCRTextBlock(text="15:40", min_x=0.45, min_y=0.40, max_x=0.55, max_y=0.44),
+    ]
+
+    result = handler.handle(
+        Action(
+            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+            params={"mode": "summary", "instruction": "读取一下我和 沪上小牛爷 都聊了些什么内容"},
+        )
+    )
+
+    assert result.ok is True
+    assert result.message == "当前聊天可见内容摘要: emoji有点难搞；得给你改个备注了"
+    assert result.metadata["reader_backend"] == "macos_vision"

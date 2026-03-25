@@ -14,8 +14,8 @@ ACTION_SCHEMAS: dict[ActionName, dict[str, Any]] = {
     },
     ActionName.WECHAT_READ_LAST_MESSAGE: {
         "required": set(),
-        "optional": {"contact", "mode"},
-        "description": "Read the last visible message in the current WeChat chat window",
+        "optional": {"contact", "mode", "instruction"},
+        "description": "Read or summarize visible content in the current WeChat chat window",
     },
     ActionName.WECHAT_SEND_MESSAGE: {
         "required": {"contact", "text"},
@@ -109,10 +109,13 @@ class OpenAIParser:
             "or a plan object with key actions containing a list of action objects. "
             "Allowed actions and exact params: "
             "wechat.open => params {}, "
-            "wechat.read_last_message => params {mode: \"all\"|\"last\"} with optional contact: string, "
+            "wechat.read_last_message => params {mode: \"all\"|\"last\"|\"summary\"} with optional contact: string and optional instruction: string, "
             "wechat.send_message => params {contact: string, text: string}, "
             "chrome.focus_address_bar => params {}, "
             "chrome.search => params {query: string}. "
             "Use multiple actions when the user requests a sequence such as opening WeChat "
-            "and then sending a message. Do not invent keys. Return JSON only."
+            "and then sending a message. "
+            "Use mode \"summary\" for requests like summarizing what both sides talked about. "
+            "For screenshot-reading requests, include instruction with the user's original intent when helpful. "
+            "Do not invent keys. Return JSON only."
         )

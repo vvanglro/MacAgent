@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from importlib import resources
@@ -37,8 +38,11 @@ class WeChatReadLastMessageHandler:
         self.executor = executor
 
     def handle(self, action: Action) -> ActionResult:
+        contact = str(action.params.get("contact", "")).strip()
         self.executor.run_or_raise(["open", "-a", "WeChat"])
         self.executor.run_or_raise(["osascript", "-e", _wechat_activate_script()], timeout=20)
+        if contact:
+            self.executor.run_or_raise(["osascript", "-e", _wechat_open_chat_script(contact)], timeout=30)
 
         bounds_result = self.executor.run_or_raise(["osascript", "-e", _wechat_window_bounds_script()], timeout=20)
         window_bounds = _parse_window_bounds(bounds_result.stdout)
@@ -54,14 +58,23 @@ class WeChatReadLastMessageHandler:
             )
             blocks = self._recognize_text_blocks(screenshot_path)
             message = _extract_last_message(blocks)
+            ocr_text = _collect_ocr_text(blocks)
         finally:
             screenshot_path.unlink(missing_ok=True)
 
         return ActionResult(
             ok=True,
             action=ActionName.WECHAT_READ_LAST_MESSAGE,
-            message=f"当前聊天最后一条消息: {message}",
-            metadata={"last_message": message},
+            message=(
+                f"{contact} 最后一条消息: {message}"
+                if contact
+                else f"当前聊天最后一条消息: {message}"
+            ),
+            metadata={
+                "last_message": message,
+                "contact": contact or None,
+                "ocr_text": ocr_text,
+            },
         )
 
     def _recognize_text_blocks(self, image_path: Path) -> list[OCRTextBlock]:
@@ -86,32 +99,7 @@ class WeChatSendMessageHandler:
             raise ExecutionError("text is required")
 
         self.executor.run_or_raise(["open", "-a", "WeChat"])
-        script = (
-            'set savedClipboard to the clipboard\n'
-            'try\n'
-            f'  set contactName to "{_escape(contact)}"\n'
-            f'  set msgText to "{_escape(text)}"\n'
-            '  tell application "WeChat" to activate\n'
-            '  delay 1.5\n'
-            '  tell application "System Events"\n'
-            '    set the clipboard to contactName\n'
-            '    keystroke "f" using command down\n'
-            '    delay 0.5\n'
-            '    keystroke "v" using command down\n'
-            '    delay 1\n'
-            '    key code 36\n'
-            '    delay 1\n'
-            '    set the clipboard to msgText\n'
-            '    keystroke "v" using command down\n'
-            '    delay 0.5\n'
-            '    key code 36\n'
-            '  end tell\n'
-            '  set the clipboard to savedClipboard\n'
-            'on error errMsg number errNum\n'
-            '  set the clipboard to savedClipboard\n'
-            '  error errMsg number errNum\n'
-            'end try'
-        )
+        script = _wechat_send_message_script(contact, text)
         self.executor.run_or_raise(["osascript", "-e", script], timeout=30)
         return ActionResult(ok=True, action=ActionName.WECHAT_SEND_MESSAGE, message=f"消息已发送给 {contact}")
 
@@ -122,6 +110,56 @@ def _escape(value: str) -> str:
 
 def _wechat_activate_script() -> str:
     return 'tell application "WeChat" to activate'
+
+
+def _wechat_open_chat_script(contact: str) -> str:
+    return (
+        'set savedClipboard to the clipboard\n'
+        'try\n'
+        f'{_wechat_focus_contact_steps(contact)}\n'
+        '  set the clipboard to savedClipboard\n'
+        'on error errMsg number errNum\n'
+        '  set the clipboard to savedClipboard\n'
+        '  error errMsg number errNum\n'
+        'end try'
+    )
+
+
+def _wechat_send_message_script(contact: str, text: str) -> str:
+    return (
+        'set savedClipboard to the clipboard\n'
+        'try\n'
+        f'  set msgText to "{_escape(text)}"\n'
+        f'{_wechat_focus_contact_steps(contact)}\n'
+        '  tell application "System Events"\n'
+        '    set the clipboard to msgText\n'
+        '    keystroke "v" using command down\n'
+        '    delay 0.5\n'
+        '    key code 36\n'
+        '  end tell\n'
+        '  set the clipboard to savedClipboard\n'
+        'on error errMsg number errNum\n'
+        '  set the clipboard to savedClipboard\n'
+        '  error errMsg number errNum\n'
+        'end try'
+    )
+
+
+def _wechat_focus_contact_steps(contact: str) -> str:
+    return (
+        f'  set contactName to "{_escape(contact)}"\n'
+        '  tell application "WeChat" to activate\n'
+        '  delay 1.5\n'
+        '  tell application "System Events"\n'
+        '    set the clipboard to contactName\n'
+        '    keystroke "f" using command down\n'
+        '    delay 0.5\n'
+        '    keystroke "v" using command down\n'
+        '    delay 1\n'
+        '    key code 36\n'
+        '  end tell\n'
+        '  delay 1'
+    )
 
 
 def _wechat_window_bounds_script() -> str:
@@ -156,9 +194,9 @@ def _parse_window_bounds(raw: str) -> tuple[int, int, int, int]:
 
 def _chat_capture_region(window_bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
     x, y, width, height = window_bounds
-    left = x + int(width * 0.24)
+    left = x + int(width * 0.30)
     top = y + int(height * 0.12)
-    capture_width = max(1, int(width * 0.73))
+    capture_width = max(1, int(width * 0.67))
     capture_height = max(1, int(height * 0.66))
     return (left, top, capture_width, capture_height)
 
@@ -191,21 +229,34 @@ def _parse_ocr_blocks(raw: str) -> list[OCRTextBlock]:
 
 
 def _extract_last_message(blocks: list[OCRTextBlock]) -> str:
-    if not blocks:
+    message_blocks = [block for block in blocks if not _is_probable_timestamp(block)]
+    if not message_blocks:
         raise ExecutionError("No readable message found in the current WeChat chat window")
 
-    sorted_blocks = sorted(blocks, key=lambda block: (block.min_y, block.min_x))
+    sorted_blocks = sorted(message_blocks, key=lambda block: (block.min_y, block.min_x))
     anchor = sorted_blocks[0]
-    message_blocks = [anchor]
+    cluster = [anchor]
 
     for block in sorted_blocks[1:]:
-        vertical_gap = block.min_y - message_blocks[-1].max_y
+        vertical_gap = block.min_y - cluster[-1].max_y
         if vertical_gap > 0.045:
             break
-        message_blocks.append(block)
+        cluster.append(block)
 
-    message_blocks.sort(key=lambda block: (-block.min_y, block.min_x))
-    message = " ".join(block.text for block in message_blocks).strip()
+    cluster.sort(key=lambda block: (-block.min_y, block.min_x))
+    message = " ".join(block.text for block in cluster).strip()
     if not message:
         raise ExecutionError("No readable message found in the current WeChat chat window")
     return message
+
+
+def _collect_ocr_text(blocks: list[OCRTextBlock]) -> list[str]:
+    return [block.text for block in sorted(blocks, key=lambda block: (-block.min_y, block.min_x))]
+
+
+def _is_probable_timestamp(block: OCRTextBlock) -> bool:
+    text = block.text.strip()
+    if not re.fullmatch(r"\d{1,2}:\d{2}", text):
+        return False
+    center_x = (block.min_x + block.max_x) / 2
+    return 0.15 <= center_x <= 0.85

@@ -5,6 +5,7 @@
 ## Features (V1)
 - 微信发送消息：`wechat.send_message(contact, text)`
 - 读取当前聊天最后一条消息：`wechat.read_last_message()`
+- 读取指定联系人最后一条消息：`wechat.read_last_message(contact)`
 - Chrome 聚焦地址栏：`chrome.focus_address_bar()`
 - Chrome 搜索：`chrome.search(query)`
 
@@ -20,6 +21,7 @@ pip install -e .[dev]
 macagent run "给hulk发微信说hello" --yes
 macagent run "打开微信 给hulk发微信说hello" --yes
 macagent run "读取当前聊天最后一条消息"
+macagent run "读取不熬夜最后一条消息"
 macagent run "聚焦 chrome 地址栏"
 macagent run "搜索 macagent"
 ```

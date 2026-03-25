@@ -24,3 +24,9 @@ def test_guardrails_accept_wechat_open() -> None:
 def test_guardrails_accept_wechat_read_last_message() -> None:
     action = Action(name=ActionName.WECHAT_READ_LAST_MESSAGE)
     validate_action(action)
+
+
+def test_guardrails_reject_empty_contact_for_wechat_read_last_message() -> None:
+    action = Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": ""})
+    with pytest.raises(GuardrailError):
+        validate_action(action)

@@ -31,3 +31,8 @@ def validate_action(action: Action) -> None:
         query = str(action.params.get("query", "")).strip()
         if not query:
             raise GuardrailError("query is required")
+
+    if action.name == ActionName.WECHAT_READ_LAST_MESSAGE:
+        contact = str(action.params.get("contact", "")).strip()
+        if "contact" in action.params and not contact:
+            raise GuardrailError("contact must not be empty")

@@ -12,7 +12,9 @@ from macagent.tools.wechat import (
     WeChatReadLastMessageHandler,
     WeChatSendMessageHandler,
     _chat_capture_region,
+    _collect_ocr_text,
     _extract_last_message,
+    _is_probable_timestamp,
     _parse_window_bounds,
 )
 
@@ -73,7 +75,7 @@ def test_parse_window_bounds_accepts_four_numbers() -> None:
 
 
 def test_chat_capture_region_focuses_message_area() -> None:
-    assert _chat_capture_region((100, 200, 1000, 800)) == (340, 296, 730, 528)
+    assert _chat_capture_region((100, 200, 1000, 800)) == (400, 296, 670, 528)
 
 
 def test_extract_last_message_joins_bottom_multiline_cluster() -> None:
@@ -86,6 +88,35 @@ def test_extract_last_message_joins_bottom_multiline_cluster() -> None:
     )
 
     assert message == "第一行 第二行"
+
+
+def test_extract_last_message_ignores_centered_timestamp_labels() -> None:
+    message = _extract_last_message(
+        [
+            OCRTextBlock(text="14:28", min_x=0.45, min_y=0.08, max_x=0.55, max_y=0.12),
+            OCRTextBlock(text="hello", min_x=0.65, min_y=0.07, max_x=0.82, max_y=0.11),
+            OCRTextBlock(text="更早的消息", min_x=0.10, min_y=0.30, max_x=0.30, max_y=0.34),
+        ]
+    )
+
+    assert message == "hello"
+
+
+def test_collect_ocr_text_returns_all_blocks_top_to_bottom() -> None:
+    text = _collect_ocr_text(
+        [
+            OCRTextBlock(text="底部", min_x=0.60, min_y=0.08, max_x=0.82, max_y=0.12),
+            OCRTextBlock(text="顶部", min_x=0.10, min_y=0.40, max_x=0.30, max_y=0.44),
+        ]
+    )
+
+    assert text == ["顶部", "底部"]
+
+
+def test_is_probable_timestamp_recognizes_centered_time_label() -> None:
+    assert _is_probable_timestamp(
+        OCRTextBlock(text="14:28", min_x=0.45, min_y=0.20, max_x=0.55, max_y=0.24)
+    ) is True
 
 
 def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None:
@@ -130,9 +161,57 @@ def test_wechat_read_last_message_handler_reads_chat_region(monkeypatch) -> None
     assert result.ok is True
     assert result.metadata["last_message"] == "hello"
     assert result.message == "当前聊天最后一条消息: hello"
+    assert result.metadata["ocr_text"] == ["earlier", "hello"]
     assert executor.commands[0] == ["open", "-a", "WeChat"]
     assert executor.commands[1] == ["osascript", "-e", 'tell application "WeChat" to activate']
     assert executor.commands[2][0] == "osascript"
     assert executor.commands[3][:3] == ["screencapture", "-x", "-R"]
-    assert executor.commands[3][3] == "340,296,730,528"
+    assert executor.commands[3][3] == "400,296,670,528"
     assert executor.commands[4][0] == "swift"
+
+
+def test_wechat_read_last_message_handler_opens_target_chat_before_reading(monkeypatch) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    executor.responses["swift"] = CompletedProcess(
+        ["swift"],
+        0,
+        stdout=json.dumps(
+            [
+                {"text": "晚上早点睡", "minX": 0.65, "minY": 0.08, "maxX": 0.90, "maxY": 0.12},
+            ]
+        ),
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+
+    class FakeResources:
+        def __enter__(self) -> Path:
+            return Path("/tmp/fake_vision_ocr.swift")
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.as_file",
+        lambda _path: FakeResources(),
+    )
+    monkeypatch.setattr(
+        "macagent.tools.wechat.resources.files",
+        lambda _package: Path("/tmp"),
+    )
+
+    result = handler.handle(Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": "不熬夜"}))
+
+    assert result.ok is True
+    assert result.metadata["contact"] == "不熬夜"
+    assert result.message == "不熬夜 最后一条消息: 晚上早点睡"
+    assert executor.commands[2][0] == "osascript"
+    assert "contactName" in executor.commands[2][2]
+    assert "不熬夜" in executor.commands[2][2]
+    assert executor.commands[3][0] == "osascript"

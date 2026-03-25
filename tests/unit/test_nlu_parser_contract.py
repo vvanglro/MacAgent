@@ -37,3 +37,11 @@ def test_rule_parser_outputs_wechat_read_last_message_action() -> None:
     plan = parser.parse("读取当前聊天最后一条消息")
 
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+
+
+def test_rule_parser_outputs_wechat_read_last_message_for_contact() -> None:
+    parser = RuleBasedParser()
+    plan = parser.parse("读取不熬夜最后一条消息")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"contact": "不熬夜"}

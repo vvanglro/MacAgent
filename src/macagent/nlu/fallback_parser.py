@@ -11,8 +11,11 @@ class RuleBasedParser:
 
     OPEN_WECHAT_PATTERN = re.compile(r"(打开|启动)(?:一下)?微信")
     WECHAT_PATTERN = re.compile(r"给(?P<contact>.+?)发微信[：: ]?(说)?(?P<text>.+)")
-    READ_LAST_MESSAGE_PATTERN = re.compile(
+    READ_CURRENT_LAST_MESSAGE_PATTERN = re.compile(
         r"((读取|查看|看看)(?:一下)?(?:微信)?(?:当前聊天|当前会话|当前对话)?(?:的)?最后一条消息)"
+    )
+    READ_CONTACT_LAST_MESSAGE_PATTERN = re.compile(
+        r"^(?:读取|查看|看看)(?:一下)?(?:微信(?:里|中)?(?:和)?|微信)?(?P<contact>.+?)(?:的)?最后一条消息$"
     )
 
     def parse(self, text: str) -> ActionPlan:
@@ -40,7 +43,20 @@ class RuleBasedParser:
         if actions:
             return ActionPlan(actions=actions)
 
-        if self.READ_LAST_MESSAGE_PATTERN.search(raw):
+        contact_match = self.READ_CONTACT_LAST_MESSAGE_PATTERN.search(raw)
+        if contact_match:
+            contact = contact_match.group("contact").strip()
+            if contact and contact not in {"当前聊天", "当前会话", "当前对话"}:
+                return ActionPlan(
+                    actions=[
+                        Action(
+                            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+                            params={"contact": contact},
+                        )
+                    ]
+                )
+
+        if self.READ_CURRENT_LAST_MESSAGE_PATTERN.search(raw):
             return ActionPlan(actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE)])
 
         if "聚焦" in raw and ("地址栏" in raw or "搜索栏" in raw):

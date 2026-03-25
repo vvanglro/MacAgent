@@ -99,6 +99,25 @@ def test_llm_parser_accepts_read_last_message_action() -> None:
     assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
 
 
+def test_llm_parser_accepts_read_last_message_action_with_contact() -> None:
+    parser = OpenAIParser.__new__(OpenAIParser)
+    parser.model = "gpt-4o-mini"
+    parser.client = FakeClient(
+        json.dumps(
+            {
+                "name": "wechat.read_last_message",
+                "params": {"contact": "不熬夜"},
+                "requires_confirmation": False,
+            }
+        )
+    )
+
+    plan = parser.parse("读取不熬夜最后一条消息")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {"contact": "不熬夜"}
+
+
 def test_llm_parser_raises_parse_error_on_bad_json() -> None:
     parser = OpenAIParser.__new__(OpenAIParser)
     parser.model = "gpt-4o-mini"

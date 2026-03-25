@@ -1,6 +1,6 @@
 # MacAgent
 
-一个可通过自然语言操控 macOS 应用的 Agent（MVP）。
+一个可通过自然语言操控 macOS 应用的 ReAct Agent（MVP）。
 
 ## Features (V1)
 - 微信发送消息：`wechat.send_message(contact, text)`
@@ -8,6 +8,12 @@
 - 读取指定联系人最后一条消息：`wechat.read_last_message(contact)`
 - Chrome 聚焦地址栏：`chrome.focus_address_bar()`
 - Chrome 搜索：`chrome.search(query)`
+
+## How It Works
+- 先理解用户目标，而不是一次性把全部步骤写死
+- 每次只决定下一步原子动作，例如“先打开微信”“再读取聊天”
+- 执行动作后根据观察结果继续推进
+- 在终端输出执行中的思考和当前步骤，方便排查
 
 ## Install
 ```bash

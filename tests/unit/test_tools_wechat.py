@@ -487,3 +487,73 @@ def test_wechat_read_last_message_handler_summary_mode_falls_back_to_visible_ocr
     assert result.ok is True
     assert result.message == "当前聊天可见内容摘要: emoji有点难搞；得给你改个备注了"
     assert result.metadata["reader_backend"] == "macos_vision"
+
+
+def test_wechat_read_last_message_handler_reply_advice_mode_uses_summary_and_reply_suggestion(monkeypatch) -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+    monkeypatch.setattr(handler, "_open_chat_from_search", lambda contact, window_bounds: None)
+    monkeypatch.setattr(
+        handler,
+        "_read_chat_messages",
+        lambda region, mode, instruction: (
+            VisualReadResult(
+                incoming_messages=["一张哆啦A梦若有所思的表情图片", "那我也写个700字？", "一张哆啦A梦咬牙切齿的表情图片"],
+                ocr_text=["那我也写个700字？", "得给你改个备注了", "emoji有点难搞"],
+                summary="对方先用表情接梗，接着问要不要也写个 700 字，整体是轻松打趣的聊天氛围。",
+                reply_suggestion="可以回“你这 700 字我可等着看了，要不你先来个提纲版？” 这样既接住玩笑，也方便把话题继续下去。",
+            ),
+            "vision_model",
+        ),
+    )
+
+    result = handler.handle(
+        Action(
+            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+            params={"contact": "沪上小牛爷", "mode": "reply_advice", "instruction": "读取一下沪上小牛爷说了些什么，我改怎么继续聊天"},
+        )
+    )
+
+    assert result.ok is True
+    assert result.message == (
+        "沪上小牛爷 继续聊天建议：\n"
+        "对方刚才主要在说：对方先用表情接梗，接着问要不要也写个 700 字，整体是轻松打趣的聊天氛围。\n"
+        "你可以这样继续聊：可以回“你这 700 字我可等着看了，要不你先来个提纲版？” 这样既接住玩笑，也方便把话题继续下去。"
+    )
+    assert result.metadata["reply_suggestion"] == "可以回“你这 700 字我可等着看了，要不你先来个提纲版？” 这样既接住玩笑，也方便把话题继续下去。"
+    assert result.metadata["mode"] == "reply_advice"
+
+
+def test_wechat_read_last_message_handler_reply_advice_mode_falls_back_to_local_hint() -> None:
+    executor = FakeExecutor()
+    executor.responses["osascript"] = CompletedProcess(
+        ["osascript"],
+        0,
+        stdout="100,200,1000,800",
+        stderr="",
+    )
+    handler = WeChatReadLastMessageHandler(executor)
+    handler._capture_region_image = lambda _region: Path("/tmp/fake-wechat.png")  # type: ignore[method-assign]
+    handler._recognize_text_blocks = lambda _image_path: [  # type: ignore[method-assign]
+        OCRTextBlock(text="那我也写个700字？", min_x=0.20, min_y=0.22, max_x=0.42, max_y=0.28),
+        OCRTextBlock(text="得给你改个备注了", min_x=0.70, min_y=0.18, max_x=0.88, max_y=0.24),
+        OCRTextBlock(text="emoji有点难搞", min_x=0.70, min_y=0.28, max_x=0.88, max_y=0.34),
+    ]
+
+    result = handler.handle(
+        Action(
+            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+            params={"mode": "reply_advice", "instruction": "读取一下沪上小牛爷说了些什么，我改怎么继续聊天"},
+        )
+    )
+
+    assert result.ok is True
+    assert "你可以这样继续聊：" in result.message
+    assert "那我也写个700字？" in result.message
+    assert result.metadata["reader_backend"] == "macos_vision"

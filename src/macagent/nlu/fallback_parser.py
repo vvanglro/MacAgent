@@ -23,6 +23,16 @@ class RuleBasedParser:
     READ_CONTACT_MESSAGES_PATTERN = re.compile(
         r"^(?:读取|查看|看看)(?:一下)?(?:微信(?:里|中)?(?:和)?|微信)?(?P<contact>.+?)(?:的)?消息$"
     )
+    READ_CONTACT_REPLY_ADVICE_PATTERN = re.compile(
+        r"^(?:读取|查看|看看|分析|总结)?(?:一下)?(?:我和|微信(?:里|中)?(?:和)?|微信)?\s*(?P<contact>.+?)\s*"
+        r"(?:说了些什么|说了什么|都说了些什么|都说了什么|聊了些什么|聊了什么)"
+        r"(?:，|,|\s+)?我(?:改|该)怎么(?:继续聊天|继续聊|回|回复|接话).*$"
+    )
+    READ_CURRENT_REPLY_ADVICE_PATTERN = re.compile(
+        r"^(?:读取|查看|看看|分析|总结)?(?:一下)?(?:微信)?(?:当前聊天|当前会话|当前对话)?(?:里)?"
+        r"(?:说了些什么|说了什么|都说了些什么|都说了什么|聊了些什么|聊了什么)"
+        r"(?:，|,|\s+)?我(?:改|该)怎么(?:继续聊天|继续聊|回|回复|接话).*$"
+    )
     READ_CONTACT_SUMMARY_PATTERN = re.compile(
         r"^(?:读取|查看|看看|总结)(?:一下)?(?:我和|微信(?:里|中)?(?:和)?|微信)?\s*(?P<contact>.+?)\s*(?:的)?(?:聊天内容|都聊了些什么内容|都聊了什么内容|都聊了些什么|都聊了什么)$"
     )
@@ -71,6 +81,29 @@ class RuleBasedParser:
         if self.READ_CURRENT_LAST_MESSAGE_PATTERN.search(raw):
             return ActionPlan(
                 actions=[Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "last", "instruction": raw})]
+            )
+
+        contact_reply_advice_match = self.READ_CONTACT_REPLY_ADVICE_PATTERN.search(raw)
+        if contact_reply_advice_match:
+            contact = contact_reply_advice_match.group("contact").strip()
+            if contact and contact not in {"当前聊天", "当前会话", "当前对话"}:
+                return ActionPlan(
+                    actions=[
+                        Action(
+                            name=ActionName.WECHAT_READ_LAST_MESSAGE,
+                            params={"contact": contact, "mode": "reply_advice", "instruction": raw},
+                        )
+                    ]
+                )
+
+        if self.READ_CURRENT_REPLY_ADVICE_PATTERN.search(raw):
+            return ActionPlan(
+                actions=[
+                    Action(
+                        name=ActionName.WECHAT_READ_LAST_MESSAGE,
+                        params={"mode": "reply_advice", "instruction": raw},
+                    )
+                ]
             )
 
         contact_messages_match = self.READ_CONTACT_MESSAGES_PATTERN.search(raw)

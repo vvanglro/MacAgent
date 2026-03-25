@@ -31,6 +31,11 @@ def test_guardrails_accept_wechat_read_summary_mode() -> None:
     validate_action(action)
 
 
+def test_guardrails_accept_wechat_read_reply_advice_mode() -> None:
+    action = Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"mode": "reply_advice"})
+    validate_action(action)
+
+
 def test_guardrails_reject_empty_contact_for_wechat_read_last_message() -> None:
     action = Action(name=ActionName.WECHAT_READ_LAST_MESSAGE, params={"contact": ""})
     with pytest.raises(GuardrailError):

@@ -60,11 +60,13 @@ def test_agent_executes_multi_step_plan_in_order() -> None:
     result = agent.run("hello", auto_confirm=True)
 
     assert result.ok is True
-    assert result.message == "微信已打开 -> 消息已发送给 hulk"
+    assert result.message == "消息已发送给 hulk"
     assert result.metadata["steps"] == [
         {"action": "wechat.open", "message": "微信已打开", "ok": True},
         {"action": "wechat.send_message", "message": "消息已发送给 hulk", "ok": True},
     ]
+    assert result.metadata["goal"] == "wechat.send_message"
+    assert len(result.metadata["react_trace"]) == 2
 
 
 def test_agent_requires_confirmation_before_running_multi_step_plan() -> None:
@@ -82,6 +84,7 @@ def test_agent_requires_confirmation_before_running_multi_step_plan() -> None:
 
 def test_agent_executes_read_last_message_action() -> None:
     reg = ActionRegistry()
+    reg.register(ActionName.WECHAT_OPEN, EchoHandler("微信已打开"))
     reg.register(ActionName.WECHAT_READ_LAST_MESSAGE, EchoHandler("当前聊天最后一条消息: hello"))
 
     agent = MacAgent(parser=ReadLastMessageParser(), registry=reg)
@@ -89,6 +92,11 @@ def test_agent_executes_read_last_message_action() -> None:
 
     assert result.ok is True
     assert result.message == "当前聊天最后一条消息: hello"
+    assert result.metadata["steps"] == [
+        {"action": "wechat.open", "message": "微信已打开", "ok": True},
+        {"action": "wechat.read_last_message", "message": "当前聊天最后一条消息: hello", "ok": True},
+    ]
+    assert result.metadata["goal"] == "wechat.read_last_message"
 
 
 def test_agent_attaches_original_instruction_to_read_action() -> None:
@@ -100,6 +108,7 @@ def test_agent_attaches_original_instruction_to_read_action() -> None:
             return ActionResult(ok=True, action=action.name, message="done")
 
     reg = ActionRegistry()
+    reg.register(ActionName.WECHAT_OPEN, EchoHandler("微信已打开"))
     reg.register(ActionName.WECHAT_READ_LAST_MESSAGE, CapturingHandler())
 
     agent = MacAgent(parser=ReadLastMessageParser(), registry=reg)

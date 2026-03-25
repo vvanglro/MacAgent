@@ -30,6 +30,7 @@ class VisualReadResult:
     incoming_messages: list[str]
     ocr_text: list[str]
     summary: str | None = None
+    reply_suggestion: str | None = None
 
 
 class WeChatChatVisionReader:
@@ -61,14 +62,20 @@ class WeChatChatVisionReader:
         incoming_messages = _clean_text_list(payload.get("incoming_messages"))
         ocr_text = _clean_text_list(payload.get("ocr_text"))
         summary = str(payload.get("summary", "")).strip() or None
+        reply_suggestion = str(payload.get("reply_suggestion", "")).strip() or None
 
-        if mode != "summary" and not incoming_messages:
+        if mode not in {"summary", "reply_advice"} and not incoming_messages:
             raise ExecutionError("Vision model could not find any incoming messages in the chat screenshot")
 
         if not ocr_text:
             ocr_text = incoming_messages.copy()
 
-        return VisualReadResult(incoming_messages=incoming_messages, ocr_text=ocr_text, summary=summary)
+        return VisualReadResult(
+            incoming_messages=incoming_messages,
+            ocr_text=ocr_text,
+            summary=summary,
+            reply_suggestion=reply_suggestion,
+        )
 
     def _request_payload(self, image_path: Path, mode: str, instruction: str | None) -> dict[str, Any]:
         try:
@@ -105,11 +112,12 @@ class WeChatChatVisionReader:
     def _system_prompt(self) -> str:
         return (
             "You analyze a WeChat desktop chat screenshot. "
-            "Return JSON only with keys incoming_messages, ocr_text, and summary. "
+            "Return JSON only with keys incoming_messages, ocr_text, summary, and reply_suggestion. "
             "incoming_messages must be an array of visible left-side received messages only, ordered from oldest to newest. "
             "If a left-side bubble is an emoji, sticker, image, or other non-text content, describe it briefly in Chinese instead of omitting it. "
             "ocr_text must be an array of all visible readable text snippets from the screenshot, ordered from top to bottom. "
             "summary must be a concise Chinese summary of the visible conversation when the user asks for a summary; otherwise return an empty string. "
+            "reply_suggestion must be a concise, natural Chinese suggestion for what the user could say next when they ask how to continue chatting; otherwise return an empty string. "
             "Ignore timestamps as messages."
         )
 
@@ -119,6 +127,8 @@ class WeChatChatVisionReader:
             goal = "Return the latest visible incoming message from the left side."
         elif mode == "summary":
             goal = "Summarize what the visible conversation is about, using both left-side and right-side content."
+        elif mode == "reply_advice":
+            goal = "Understand what both sides are talking about and suggest a natural next reply in Chinese for the current user."
         else:
             goal = "Return all visible incoming messages from the left side."
 
@@ -177,9 +187,19 @@ class WeChatReadLastMessageHandler:
         incoming_messages = read_result.incoming_messages
         ocr_text = read_result.ocr_text
         summary = read_result.summary
+        reply_suggestion = read_result.reply_suggestion
         emit_progress(self.reporter, f"聊天分析完成，识别后端：{reader_backend}")
 
-        if mode == "summary":
+        if mode == "reply_advice":
+            summary = summary or _fallback_summary_from_ocr_text(ocr_text)
+            reply_suggestion = reply_suggestion or _fallback_reply_suggestion(summary, ocr_text, incoming_messages)
+            if not summary and not reply_suggestion:
+                raise ExecutionError("No readable chat content found in the current WeChat chat window")
+            message = (
+                f"对方刚才主要在说：{summary or '当前截图里主要是表情或非文字内容'}\n"
+                f"你可以这样继续聊：{reply_suggestion or '先接住对方刚才的点，再顺着问一句。'}"
+            )
+        elif mode == "summary":
             message = summary or _fallback_summary_from_ocr_text(ocr_text)
             if not message:
                 raise ExecutionError("No readable chat content found in the current WeChat chat window")
@@ -196,7 +216,11 @@ class WeChatReadLastMessageHandler:
             ok=True,
             action=ActionName.WECHAT_READ_LAST_MESSAGE,
             message=(
-                f"{contact} 可见聊天内容摘要: {message}"
+                f"{contact} 继续聊天建议：\n{message}"
+                if mode == "reply_advice" and contact
+                else f"当前聊天继续聊天建议：\n{message}"
+                if mode == "reply_advice"
+                else f"{contact} 可见聊天内容摘要: {message}"
                 if mode == "summary" and contact
                 else f"当前聊天可见内容摘要: {message}"
                 if mode == "summary"
@@ -215,6 +239,7 @@ class WeChatReadLastMessageHandler:
                 "mode": mode,
                 "ocr_text": ocr_text,
                 "summary": summary or None,
+                "reply_suggestion": reply_suggestion or None,
                 "reader_backend": reader_backend,
             },
         )
@@ -242,10 +267,23 @@ class WeChatReadLastMessageHandler:
 
             emit_progress(self.reporter, "正在使用本地 OCR 识别截图")
             blocks = self._recognize_text_blocks(screenshot_path)
-            incoming_messages = _extract_incoming_messages(blocks, strict=mode != "summary")
+            incoming_messages = _extract_incoming_messages(blocks, strict=mode not in {"summary", "reply_advice"})
             ocr_text = _collect_ocr_text(blocks)
-            summary = _fallback_summary_from_ocr_text(ocr_text) if mode == "summary" else None
-            return VisualReadResult(incoming_messages=incoming_messages, ocr_text=ocr_text, summary=summary), "macos_vision"
+            summary = _fallback_summary_from_ocr_text(ocr_text) if mode in {"summary", "reply_advice"} else None
+            reply_suggestion = (
+                _fallback_reply_suggestion(summary, ocr_text, incoming_messages)
+                if mode == "reply_advice"
+                else None
+            )
+            return (
+                VisualReadResult(
+                    incoming_messages=incoming_messages,
+                    ocr_text=ocr_text,
+                    summary=summary,
+                    reply_suggestion=reply_suggestion,
+                ),
+                "macos_vision",
+            )
         finally:
             screenshot_path.unlink(missing_ok=True)
 
@@ -601,6 +639,24 @@ def _fallback_summary_from_ocr_text(ocr_text: list[str]) -> str:
     return preview
 
 
+def _fallback_reply_suggestion(
+    summary: str | None,
+    ocr_text: list[str],
+    incoming_messages: list[str],
+) -> str:
+    latest_incoming = incoming_messages[-1] if incoming_messages else ""
+    if latest_incoming:
+        return f"可以先接住对方刚才这句“{latest_incoming}”，再顺着问一句你的想法或者补充一个轻松回应。"
+
+    if summary:
+        return f"可以先回应“{summary[:18]}”这个点，再补一句你的看法，顺势把话题继续下去。"
+
+    if ocr_text:
+        return f"可以先接住截图里提到的“{ocr_text[0]}”，再问一句对方现在怎么想。"
+
+    return "可以先接住对方刚才的情绪或表情，再顺着问一句近况或想法。"
+
+
 def _pick_contact_search_result(blocks: list[OCRTextBlock], contact: str) -> OCRTextBlock | None:
     normalized_contact = contact.strip()
     if not normalized_contact:
@@ -685,4 +741,5 @@ def _mode_display_name(mode: str) -> str:
         "last": "最后一条消息",
         "all": "全部收到的消息",
         "summary": "聊天摘要",
+        "reply_advice": "聊天续聊建议",
     }.get(mode, mode)

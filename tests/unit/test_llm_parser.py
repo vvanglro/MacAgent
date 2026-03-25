@@ -165,6 +165,33 @@ def test_llm_parser_accepts_summary_read_action_with_contact() -> None:
     }
 
 
+def test_llm_parser_accepts_reply_advice_action_with_contact() -> None:
+    parser = OpenAIParser.__new__(OpenAIParser)
+    parser.model = "gpt-4o-mini"
+    parser.client = FakeClient(
+        json.dumps(
+            {
+                "name": "wechat.read_last_message",
+                "params": {
+                    "contact": "沪上小牛爷",
+                    "mode": "reply_advice",
+                    "instruction": "读取一下沪上小牛爷说了些什么，我改怎么继续聊天",
+                },
+                "requires_confirmation": False,
+            }
+        )
+    )
+
+    plan = parser.parse("读取一下沪上小牛爷说了些什么，我改怎么继续聊天")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {
+        "contact": "沪上小牛爷",
+        "mode": "reply_advice",
+        "instruction": "读取一下沪上小牛爷说了些什么，我改怎么继续聊天",
+    }
+
+
 def test_llm_parser_raises_parse_error_on_bad_json() -> None:
     parser = OpenAIParser.__new__(OpenAIParser)
     parser.model = "gpt-4o-mini"

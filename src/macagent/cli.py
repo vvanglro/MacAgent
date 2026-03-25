@@ -8,6 +8,7 @@ from macagent.domain.models import ActionName
 from macagent.nlu.fallback_parser import RuleBasedParser
 from macagent.nlu.llm_parser import OpenAIParser
 from macagent.orchestrator.agent import MacAgent
+from macagent.orchestrator.react import ReActPlanner
 from macagent.orchestrator.registry import ActionRegistry
 from macagent.reporting import Reporter
 from macagent.tools.chrome import ChromeFocusAddressBarHandler, ChromeSearchHandler
@@ -64,7 +65,13 @@ def build_agent(settings: Settings, reporter: Reporter | None = None) -> MacAgen
         if settings.parser_backend == ParserBackend.OPENAI
         else RuleBasedParser()
     )
-    return MacAgent(parser=parser, registry=registry, require_confirmation=settings.require_send_confirmation)
+    return MacAgent(
+        parser=parser,
+        registry=registry,
+        require_confirmation=settings.require_send_confirmation,
+        reporter=reporter,
+        planner=ReActPlanner(),
+    )
 
 
 @app.command()

@@ -74,3 +74,15 @@ def test_rule_parser_summarizes_contact_chat_content() -> None:
         "mode": "summary",
         "instruction": "读取一下我和 沪上小牛爷 都聊了些什么内容",
     }
+
+
+def test_rule_parser_reads_contact_and_asks_for_reply_advice() -> None:
+    parser = RuleBasedParser()
+    plan = parser.parse("读取一下沪上小牛爷说了些什么，我改怎么继续聊天")
+
+    assert [action.name for action in plan.actions] == [ActionName.WECHAT_READ_LAST_MESSAGE]
+    assert plan.actions[0].params == {
+        "contact": "沪上小牛爷",
+        "mode": "reply_advice",
+        "instruction": "读取一下沪上小牛爷说了些什么，我改怎么继续聊天",
+    }

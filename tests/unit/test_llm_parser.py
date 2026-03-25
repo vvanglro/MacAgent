@@ -11,8 +11,10 @@ from macagent.nlu.llm_parser import OpenAIParser
 class FakeCompletions:
     def __init__(self, content: str) -> None:
         self._content = content
+        self.calls: list[dict] = []
 
     def create(self, **kwargs):
+        self.calls.append(kwargs)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))]
         )
@@ -47,6 +49,9 @@ def test_llm_parser_uses_chat_completions_payload(payload) -> None:
     assert action.name == ActionName.CHROME_SEARCH
     assert action.params["query"] == "macagent"
 
+    call_kwargs = parser.client.chat.completions.calls[0]
+    assert call_kwargs["response_format"] == {"type": "json_object"}
+
 
 def test_llm_parser_raises_parse_error_on_bad_json() -> None:
     parser = OpenAIParser.__new__(OpenAIParser)
@@ -55,3 +60,20 @@ def test_llm_parser_raises_parse_error_on_bad_json() -> None:
 
     with pytest.raises(ParseError):
         parser.parse("anything")
+
+
+def test_llm_parser_rejects_unsupported_param_keys() -> None:
+    parser = OpenAIParser.__new__(OpenAIParser)
+    parser.model = "gpt-4o-mini"
+    parser.client = FakeClient(
+        json.dumps(
+            {
+                "name": "chrome.search",
+                "params": {"q": "macagent"},
+                "requires_confirmation": False,
+            }
+        )
+    )
+
+    with pytest.raises(ParseError):
+        parser.parse("搜索 macagent")
